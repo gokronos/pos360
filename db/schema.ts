@@ -689,6 +689,7 @@ export const saleDiscounts = sqliteTable("sale_discounts", {
   value: real("value").notNull(),
   amount: real("amount").notNull(),
   reason: text("reason"),
+  authorizationId: text("authorization_id"),
   createdAt: text("created_at")
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
@@ -726,6 +727,30 @@ export const saleReturnLines = sqliteTable("sale_return_lines", {
   quantity: real("quantity").notNull(),
   unitPrice: real("unit_price").notNull(),
   lineTotal: real("line_total").notNull(),
+});
+export const productFavorites = sqliteTable(
+  "product_favorites",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id),
+    userId: text("user_id").notNull().references(() => appUsers.id),
+    productId: text("product_id").notNull().references(() => products.id),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [uniqueIndex("product_favorites_user_product_uq").on(t.userId,t.productId)],
+);
+export const posDiscountAuthorizations = sqliteTable("pos_discount_authorizations", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().references(() => tenants.id),
+  code: text("code").notNull(),
+  maxPercent: real("max_percent").notNull(),
+  authorizedBy: text("authorized_by").notNull().references(() => appUsers.id),
+  usedBy: text("used_by").references(() => appUsers.id),
+  saleId: text("sale_id").references(() => sales.id),
+  reason: text("reason").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  usedAt: text("used_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 export const warehouses = sqliteTable(
   "warehouses",

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { offlinePost } from "./offline-sync";
 import { apiJson, readJson } from "./api-client";
 const formatCurrency = (n: number, currency: string) =>
@@ -13,6 +13,7 @@ type P = {
   id: string;
   sku: string;
   barcode: string | null;
+  barcodes?:string[];
   name: string;
   category: string;
   price: number;
@@ -59,6 +60,8 @@ export default function POS({
   const [products, setProducts] = useState<P[]>([]),
     [cart, setCart] = useState<Cart[]>([]),
     [query, setQuery] = useState(""),
+    [favorites,setFavorites]=useState<string[]>([]),
+    [favoritesOnly,setFavoritesOnly]=useState(false),
     [priceLists, setPriceLists] = useState<
       { id: string; name: string; currency: string; isDefault: number }[]
     >([]),
@@ -83,6 +86,7 @@ export default function POS({
     [customerId, setCustomerId] = useState(""),
     [discount, setDiscount] = useState("0"),
     [discountReason, setDiscountReason] = useState("Promoción comercial"),
+    [discountAuthorizationCode,setDiscountAuthorizationCode]=useState(""),
     [payments, setPayments] = useState<{ method: string; amount: string }[]>([
       { method: "cash", amount: "" },
     ]),
@@ -117,6 +121,7 @@ export default function POS({
       currency: "COP",
       receiptFormat: "thermal_80",
     });
+  const searchRef=useRef<HTMLInputElement>(null),busyRef=useRef(false),operationIdRef=useRef<string|null>(null);
   const money = (value: number) => formatCurrency(value, business.currency);
   const sellableProducts = (items: (P & { active?: number })[]) =>
     items
@@ -159,7 +164,7 @@ export default function POS({
       }>("/api/products"),
       apiJson<any>("/api/cash"),
       apiJson<{ customers: typeof customers }>("/api/customers"),
-      apiJson<{ drafts: Draft[]; sales: Sale[] }>("/api/pos-advanced"),
+      apiJson<{ drafts: Draft[]; sales: Sale[];favorites:string[] }>("/api/pos-advanced"),
     ]);
     const defaultList = initialProducts.priceLists?.find((list) =>
       Boolean(list.isDefault),
@@ -178,6 +183,7 @@ export default function POS({
     setCustomers(cud.customers || []);
     setDrafts(ad.drafts || []);
     setSales(ad.sales || []);
+    setFavorites(ad.favorites||[]);
   };
   useEffect(() => {
     void load().catch((error) =>
@@ -199,7 +205,7 @@ export default function POS({
       }>(`/api/products${id ? `?priceListId=${id}` : ""}`);
       setProducts(sellableProducts(priced.products || []));
     },
-    filtered = products.filter((p) =>
+    filtered = products.filter((p) => (!favoritesOnly||favorites.includes(p.productId||p.id))&&
       `${p.name} ${p.sku} ${p.barcode || ""}`
         .toLowerCase()
         .includes(query.toLowerCase()),
@@ -232,6 +238,7 @@ export default function POS({
       setCart((c) =>
         c.map((x) => (x.id === id ? { ...x, qty: Math.max(1, x.qty + n) } : x)),
       );
+  const toggleFavorite=async(product:P)=>{const productId=product.productId||product.id,r=await fetch("/api/pos-advanced",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"favorite",productId})}),d=await readJson<any>(r);if(!r.ok)return notify(d.error);setFavorites(x=>d.favorite?[...new Set([...x,productId])]:x.filter(id=>id!==productId))};
   const open = async () => {
     const r = await fetch("/api/cash", {
         method: "POST",
@@ -260,13 +267,15 @@ export default function POS({
   const saveCashMovement=async()=>{const r=await fetch("/api/cash",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"movement",...cashMovement,amount:cashMovement.amount})}),d=await readJson<any>(r);if(!r.ok)return notify(d.error);setModal(null);notify("Movimiento de caja registrado");await load()};
   const approveDifference=async(sessionId:string)=>{const r=await fetch("/api/cash",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"approve",sessionId,reason:approvalReason})}),d=await readJson<any>(r);if(!r.ok)return notify(d.error);notify("Diferencia aprobada y caja cerrada");await load()};
   const sell = async () => {
+    if(busyRef.current)return;
+    busyRef.current=true;
     setBusy(true);
     const normalized = payments.map((p) => ({
         ...p,
         amount: Number(p.amount),
       })),
       payload = {
-        localId: `pos-${crypto.randomUUID()}`,
+        localId: operationIdRef.current||(operationIdRef.current=`pos-${crypto.randomUUID()}`),
         customerId: customerId || undefined,
         items: cart.map((x) => {
           const product = products.find((candidate) => candidate.id === x.id)!;
@@ -280,11 +289,13 @@ export default function POS({
         priceListId: priceListId || undefined,
         discountPercent: Number(discount),
         discountReason,
+        discountAuthorizationCode:discountAuthorizationCode||undefined,
         total,
       },
       r = await offlinePost("/api/sales", payload),
       d = await readJson<any>(r);
     setBusy(false);
+    busyRef.current=false;
     if (!r.ok) return notify(d.error);
     setReceipt({
       ...d.sale,
@@ -300,6 +311,7 @@ export default function POS({
     setCart([]);
     setDiscount("0");
     setPayments([{ method: "cash", amount: "" }]);
+    setDiscountAuthorizationCode("");operationIdRef.current=null;
     setModal("receipt");
     if (!d.queued) load();
   };
@@ -368,14 +380,18 @@ export default function POS({
     notify(`${d.number} procesada e inventario restaurado`);
     load();
   };
+  const reprint=async(saleId:string)=>{const d=await apiJson<any>(`/api/pos-advanced?saleId=${saleId}`);setReceipt(d.receipt);setModal("receipt")};
+  const createDiscountCode=async()=>{const r=await fetch("/api/pos-advanced",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"authorizeDiscount",maxPercent:Number(discount),reason:discountReason})}),d=await readJson<any>(r);if(!r.ok)return notify(d.error);setDiscountAuthorizationCode(d.code);notify(`Código ${d.code} autorizado por 30 minutos`)};
   const preparePay = () => {
     setPayments([{ method: "cash", amount: String(total) }]);
     setModal("pay");
   };
   const addPayment = () =>
     setPayments((p) => [...p, { method: "card", amount: "0" }]);
+  useEffect(()=>{const keyboard=(event:KeyboardEvent)=>{if(event.key==="F2"){event.preventDefault();searchRef.current?.focus()}if(event.key==="F4"&&cart.length&&cash){event.preventDefault();preparePay()}if(event.key==="F8"&&cart.length){event.preventDefault();setDocType("suspended");setModal("document")}if(event.key==="Escape")setModal(null)};window.addEventListener("keydown",keyboard);return()=>window.removeEventListener("keydown",keyboard)},[cart.length,cash,total]);
   return (
     <>
+      <style>{`.product-card-wrap{position:relative;display:flex}.product-card-wrap>.product-card{width:100%}.favorite-button{position:absolute;left:8px;top:8px;z-index:2;border:1px solid #d8e0e4;border-radius:16px;background:#fff;color:#a56600;padding:5px 9px;font-weight:800;cursor:pointer}.qty input{width:72px;text-align:center;border:1px solid #dfe7ea;border-radius:6px;padding:4px}`}</style>
       <div className="cash-bar advanced">
         <div>
           <span className={cash ? "online-dot" : "cash-dot"} />
@@ -430,15 +446,18 @@ export default function POS({
           <div className="pos-search">
             ⌕
             <input
+              ref={searchRef}
               autoFocus
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e)=>{if(e.key==="Enter"){const code=query.trim().toLowerCase(),match=products.find(p=>p.barcode?.toLowerCase()===code||p.sku.toLowerCase()===code||p.barcodes?.some(b=>b.toLowerCase()===code));if(match){e.preventDefault();add(match.id);setQuery("");notify(`${match.name} agregado por código`)}}}}
               placeholder="Escanee código o busque producto..."
             />
             <kbd>F2</kbd>
           </div>
           <div className="chips">
-            <button className="selected">Todos</button>
+            <button className={!favoritesOnly?"selected":""} onClick={()=>setFavoritesOnly(false)}>Todos</button>
+            <button className={favoritesOnly?"selected":""} onClick={()=>setFavoritesOnly(true)}>★ Favoritos ({favorites.length})</button>
             <button
               onClick={() => {
                 setDocType("quote");
@@ -455,13 +474,13 @@ export default function POS({
             >
               + Apartado
             </button>
+            <button onClick={()=>{setDocType("order");setModal("document")}}>+ Pedido</button>
           </div>
           <div className="product-grid">
             {filtered.map((p) => (
-              <button
+              <div className="product-card-wrap" key={p.id}><button
                 className="product-card"
                 disabled={p.trackInventory !== 0 && p.stock <= 0}
-                key={p.id}
                 onClick={() => add(p.id)}
               >
                 <div className="product-art">
@@ -477,7 +496,7 @@ export default function POS({
                   <b>{p.name}</b>
                   <strong>{money(unitPrice(p, 1))}</strong>
                 </div>
-              </button>
+              </button><button className="favorite-button" title="Agregar o quitar favorito" onClick={()=>void toggleFavorite(p)}>{favorites.includes(p.productId||p.id)?"★ Favorito":"☆ Favorito"}</button></div>
             ))}
           </div>
         </section>
@@ -515,7 +534,7 @@ export default function POS({
                       <small>{money(unitPrice(p, x.qty))} c/u</small>
                       <div className="qty">
                         <button onClick={() => change(x.id, -1)}>−</button>
-                        <span>{x.qty}</span>
+                        <input aria-label={`Cantidad de ${p.name}`} type="number" min="0.001" step="0.001" value={x.qty} onChange={e=>setCart(c=>c.map(v=>v.id===x.id?{...v,qty:Math.max(.001,Number(e.target.value)||.001)}:v))}/>
                         <button onClick={() => change(x.id, 1)}>+</button>
                       </div>
                     </div>
@@ -702,6 +721,7 @@ export default function POS({
                     />
                   </label>
                 )}
+                {Number(discount)>10&&<label>Código de autorización administrativa<input value={discountAuthorizationCode} onChange={e=>setDiscountAuthorizationCode(e.target.value.toUpperCase())} placeholder="Código de 8 caracteres"/><button className="secondary" onClick={()=>void createDiscountCode()}>Generar código (administración)</button></label>}
               </div>
             ) : modal === "drafts" ? (
               <div className="modal-list">
@@ -741,14 +761,15 @@ export default function POS({
                       </small>
                     </div>
                     <strong>{money(s.total)}</strong>
-                    {s.status === "completed" && (
+                        {s.status === "completed" && (
                       <button
                         className="table-action"
                         onClick={() => setSelectedSale(s)}
                       >
                         Seleccionar
                       </button>
-                    )}
+                        )}
+                        <button className="table-action" onClick={()=>void reprint(s.id)}>Reimprimir</button>
                   </div>
                 ))}
                 {selectedSale && (

@@ -25,7 +25,7 @@ export async function GET(req: Request) {
   }
   const rows = await d
     .prepare(
-      "SELECT id,sku,barcode,name,category,COALESCE((SELECT pp.price_minor FROM product_prices pp WHERE pp.product_id=products.id AND pp.price_list_id=? AND pp.variant_id IS NULL AND pp.min_quantity<=1 ORDER BY pp.min_quantity DESC LIMIT 1),price_minor) priceMinor,cost_minor costMinor,COALESCE((SELECT pp.price_minor FROM product_prices pp WHERE pp.product_id=products.id AND pp.price_list_id=? AND pp.variant_id IS NULL AND pp.min_quantity<=1 ORDER BY pp.min_quantity DESC LIMIT 1),price_minor)/100.0 price,cost_minor/100.0 cost,COALESCE((SELECT SUM(quantity) FROM inventory_balances b WHERE b.product_id=products.id AND b.variant_id IS NULL),0) stock,product_type productType,track_inventory trackInventory,version,active,updated_at updatedAt FROM products WHERE tenant_id=? AND (name LIKE ? OR sku LIKE ? OR barcode LIKE ? OR EXISTS(SELECT 1 FROM product_barcodes bc WHERE bc.product_id=products.id AND bc.code LIKE ?)) ORDER BY active DESC,name LIMIT 200",
+      "SELECT id,sku,barcode,name,category,(SELECT GROUP_CONCAT(code,',') FROM product_barcodes bc WHERE bc.product_id=products.id AND bc.variant_id IS NULL) barcodeList,COALESCE((SELECT pp.price_minor FROM product_prices pp WHERE pp.product_id=products.id AND pp.price_list_id=? AND pp.variant_id IS NULL AND pp.min_quantity<=1 ORDER BY pp.min_quantity DESC LIMIT 1),price_minor) priceMinor,cost_minor costMinor,COALESCE((SELECT pp.price_minor FROM product_prices pp WHERE pp.product_id=products.id AND pp.price_list_id=? AND pp.variant_id IS NULL AND pp.min_quantity<=1 ORDER BY pp.min_quantity DESC LIMIT 1),price_minor)/100.0 price,cost_minor/100.0 cost,COALESCE((SELECT SUM(quantity) FROM inventory_balances b WHERE b.product_id=products.id AND b.variant_id IS NULL),0) stock,product_type productType,track_inventory trackInventory,version,active,updated_at updatedAt FROM products WHERE tenant_id=? AND (name LIKE ? OR sku LIKE ? OR barcode LIKE ? OR EXISTS(SELECT 1 FROM product_barcodes bc WHERE bc.product_id=products.id AND bc.code LIKE ?)) ORDER BY active DESC,name LIMIT 200",
     )
     .bind(priceListId, priceListId, access.user.tenantId, q, q, q, q)
     .all();
@@ -52,6 +52,7 @@ export async function GET(req: Request) {
   return Response.json({
     products: rows.results.map((product) => ({
       ...product,
+      barcodes:String(product.barcodeList||"").split(",").filter(Boolean),
       priceTiers: tiers.results.filter(
         (tier) => tier.productId === product.id && !tier.variantId,
       ),

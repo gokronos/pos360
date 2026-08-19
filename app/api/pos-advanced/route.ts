@@ -5,9 +5,9 @@ import { inventoryMovement, resolveWarehouse } from "../../../db/inventory";
 export async function GET(req: Request) {
   const access = await requireAccess(req, "pos");
   if (access.error) return access.error;
-  const T = access.user.tenantId;
+  const T = access.user.tenantId,url=new URL(req.url),saleId=url.searchParams.get("saleId");
   const d = getRuntimeEnv().DB,
-    [drafts, sales] = await Promise.all([
+    [drafts, sales, favorites] = await Promise.all([
       d
         .prepare(
           "SELECT d.id,d.number,d.document_type documentType,d.status,d.subtotal,d.discount,d.total,d.payload,d.notes,d.created_at createdAt,COALESCE(c.name,'Consumidor final') customerName FROM pos_drafts d LEFT JOIN customers c ON c.id=d.customer_id WHERE d.tenant_id=? AND d.status='open' ORDER BY d.created_at DESC",
@@ -20,8 +20,10 @@ export async function GET(req: Request) {
         )
         .bind(T)
         .all(),
+      d.prepare("SELECT product_id productId FROM product_favorites WHERE tenant_id=? AND user_id=?").bind(T,access.user.id).all(),
     ]);
-  return Response.json({ drafts: drafts.results, sales: sales.results });
+  if(saleId){const sale=await d.prepare("SELECT s.id,s.local_id localId,s.total,s.subtotal_minor/100.0 subtotal,s.discount_minor/100.0 discount,s.status,s.created_at createdAt,COALESCE(c.name,'Consumidor final') customerName,t.name terminalName,r.name registerName,u.display_name cashierName FROM sales s LEFT JOIN customers c ON c.id=s.customer_id LEFT JOIN terminals t ON t.id=s.terminal_id LEFT JOIN cash_registers r ON r.id=s.register_id JOIN app_users u ON u.id=s.user_id WHERE s.id=? AND s.tenant_id=?").bind(saleId,T).first();if(!sale)return Response.json({error:"Venta no encontrada"},{status:404});const [items,payments]=await Promise.all([d.prepare("SELECT l.quantity qty,p.name,l.unit_price price,l.line_total lineTotal FROM sale_lines l JOIN products p ON p.id=l.product_id WHERE l.sale_id=?").bind(saleId).all(),d.prepare("SELECT method,amount,reference FROM sale_payments WHERE sale_id=?").bind(saleId).all()]);return Response.json({receipt:{...sale,number:`V-${saleId.slice(0,8).toUpperCase()}`,items:items.results,payments:payments.results,reprint:true}})}
+  return Response.json({ drafts: drafts.results, sales: sales.results, favorites:(favorites.results as {productId:string}[]).map(x=>x.productId) });
 }
 export async function POST(req: Request) {
   const access = await requireAccess(req, "pos", "create");
@@ -29,7 +31,7 @@ export async function POST(req: Request) {
   const T = access.user.tenantId,
     B = access.user.branchId;
   const p = (await req.json()) as {
-    action?: "draft" | "return" | "void";
+    action?: "draft" | "return" | "void" | "favorite" | "authorizeDiscount";
     documentType?: string;
     customerId?: string;
     items?: {
@@ -42,15 +44,19 @@ export async function POST(req: Request) {
     notes?: string;
     saleId?: string;
     reason?: string;
+    productId?:string;
+    maxPercent?:number;
   };
   const d = getRuntimeEnv().DB,
     user = access.user.id;
+  if(p.action==="favorite"){if(!p.productId)return Response.json({error:"Producto requerido"},{status:400});const product=await d.prepare("SELECT id FROM products WHERE id=? AND tenant_id=? AND active=1").bind(p.productId,T).first();if(!product)return Response.json({error:"Producto no disponible"},{status:404});const current=await d.prepare("SELECT id FROM product_favorites WHERE user_id=? AND product_id=?").bind(user,p.productId).first<{id:string}>();if(current)await d.prepare("DELETE FROM product_favorites WHERE id=?").bind(current.id).run();else await d.prepare("INSERT INTO product_favorites(id,tenant_id,user_id,product_id) VALUES (?,?,?,?)").bind(randomUUID(),T,user,p.productId).run();return Response.json({favorite:!current})}
+  if(p.action==="authorizeDiscount"){if(!["owner","admin"].includes(access.user.role))return Response.json({error:"Solo administración puede autorizar descuentos"},{status:403});const max=Math.min(100,Math.max(10.01,Number(p.maxPercent||0)));if(!p.reason?.trim())return Response.json({error:"Motivo requerido"},{status:400});const code=randomUUID().replaceAll("-","").slice(0,8).toUpperCase();await d.prepare("INSERT INTO pos_discount_authorizations(id,tenant_id,code,max_percent,authorized_by,reason,expires_at) VALUES (?,?,?,?,?,?,datetime('now','+30 minutes'))").bind(randomUUID(),T,code,max,user,p.reason.trim()).run();return Response.json({code,maxPercent:max,expiresInMinutes:30},{status:201})}
   if (p.action === "draft") {
     if (!p.items?.length)
       return Response.json({ error: "Agregue productos" }, { status: 400 });
     const id = randomUUID(),
       type = p.documentType || "suspended",
-      prefix = type === "quote" ? "COT" : type === "layaway" ? "APT" : "SUS",
+      prefix = type === "quote" ? "COT" : type === "order" ? "PED" : type === "layaway" ? "APT" : "SUS",
       number = `${prefix}-${Date.now().toString().slice(-7)}`,
       subtotal = p.items.reduce(
         (s, x) => s + Number(x.price || 0) * x.quantity,

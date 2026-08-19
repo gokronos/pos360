@@ -17,6 +17,7 @@ export async function POST(req: Request) {
     payments?: { method: string; amount: number }[];
     discountPercent?: number;
     discountReason?: string;
+    discountAuthorizationCode?: string;
     priceListId?: string;
   };
   if (!body.localId || !body.items?.length)
@@ -60,7 +61,7 @@ export async function POST(req: Request) {
     .prepare("SELECT id,total FROM sales WHERE tenant_id=? AND local_id=?")
     .bind(T, body.localId)
     .first();
-  if (existing) return Response.json({ sale: existing, duplicate: true });
+  if (existing) return Response.json({ sale: { ...existing, number:`V-${String(existing.id).slice(0,8).toUpperCase()}` }, duplicate: true });
   let subtotalMinor = 0;
   const lines: {
     id: string;
@@ -128,20 +129,17 @@ export async function POST(req: Request) {
     100,
     Math.max(0, Number(body.discountPercent || 0)),
   );
-  if (discountPercent > 10 && !["owner", "admin"].includes(access.user.role))
-    return Response.json(
-      {
-        error:
-          "Los descuentos superiores al 10% requieren autorización administrativa",
-        needsAuthorization: true,
-      },
-      { status: 403 },
-    );
+  let discountAuthorizationId:string|null=null,discountAuthorizedBy:string|null=["owner","admin"].includes(access.user.role)?user:null;
+  if (discountPercent > 10 && !["owner", "admin"].includes(access.user.role)) {
+    const authorization=body.discountAuthorizationCode?await d.prepare("SELECT id,authorized_by authorizedBy FROM pos_discount_authorizations WHERE tenant_id=? AND code=? AND used_at IS NULL AND expires_at>datetime('now') AND max_percent>=?").bind(T,body.discountAuthorizationCode.trim().toUpperCase(),discountPercent).first<{id:string;authorizedBy:string}>():null;
+    if(!authorization)return Response.json({error:"Los descuentos superiores al 10% requieren un código administrativo vigente",needsAuthorization:true},{status:403});
+    discountAuthorizationId=authorization.id;discountAuthorizedBy=authorization.authorizedBy;
+  }
   const discountMinor = Math.round((subtotalMinor * discountPercent) / 100),
     totalMinor = subtotalMinor - discountMinor;
   let payments: { method: string; amount: number; amountMinor: number }[];
   try {
-    payments = body.payments?.length
+    const rawPayments = body.payments?.length
       ? body.payments.map((payment) => {
           const amountMinor = parseMoney(payment.amount);
           return {
@@ -157,6 +155,7 @@ export async function POST(req: Request) {
             amountMinor: totalMinor,
           },
         ];
+    payments=Object.values(rawPayments.reduce<Record<string,{method:string;amount:number;amountMinor:number}>>((acc,payment)=>{const current=acc[payment.method];acc[payment.method]={method:payment.method,amount:moneyToMajor((current?.amountMinor||0)+payment.amountMinor),amountMinor:(current?.amountMinor||0)+payment.amountMinor};return acc},{}));
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : "Pago inválido" },
@@ -245,6 +244,7 @@ export async function POST(req: Request) {
       ),
       ...inventoryStatements,
       ...(creditAuthorizationId?[d.prepare("UPDATE credit_authorizations SET used_at=CURRENT_TIMESTAMP,sale_id=? WHERE id=? AND used_at IS NULL").bind(saleId,creditAuthorizationId)]:[]),
+      ...(discountAuthorizationId?[d.prepare("UPDATE pos_discount_authorizations SET used_at=CURRENT_TIMESTAMP,used_by=?,sale_id=? WHERE id=? AND used_at IS NULL").bind(user,saleId,discountAuthorizationId)]:[]),
       d
         .prepare(
           "INSERT INTO sync_events (id,tenant_id,node_id,event_type,entity_id,payload,status) VALUES (?,?,?,?,?,?,?)",
@@ -263,25 +263,26 @@ export async function POST(req: Request) {
     stmts.push(
       d
         .prepare(
-          "INSERT INTO sale_discounts (id,tenant_id,sale_id,user_id,authorized_by,discount_type,value,amount,reason) VALUES (?,?,?,?,?,?,?,?,?)",
+          "INSERT INTO sale_discounts (id,tenant_id,sale_id,user_id,authorized_by,discount_type,value,amount,reason,authorization_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(
           randomUUID(),
           T,
           saleId,
           user,
-          ["owner", "admin"].includes(access.user.role) ? user : null,
+          discountAuthorizedBy,
           "percent",
           discountPercent,
           moneyToMajor(discountMinor),
           body.discountReason || "Descuento comercial",
+          discountAuthorizationId,
         ),
     );
   const cashMinor=payments.filter(p=>p.method==="cash").reduce((sum,p)=>sum+p.amountMinor,0);
   if(cashMinor)stmts.push(d.prepare("INSERT INTO cash_movements (id,tenant_id,session_id,user_id,movement_type,amount,amount_minor,affects_cash,reason,reference) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(randomUUID(),T,session.id,user,"sale_cash",moneyToMajor(cashMinor),cashMinor,1,"Venta en efectivo",saleId));
   const creditMinor=payments.filter(p=>p.method==="credit").reduce((sum,p)=>sum+p.amountMinor,0);
   if(creditMinor&&body.customerId){const due=new Date(Date.now()+Math.max(0,customerProfile?.creditDays||0)*86400000).toISOString().slice(0,10);stmts.push(d.prepare("INSERT INTO receivables (id,tenant_id,branch_id,customer_id,sale_id,original_amount,balance,original_amount_minor,balance_minor,due_date,status) VALUES (?,?,?,?,?,?,?,?,?,?,'pending')").bind(randomUUID(),T,B,body.customerId,saleId,moneyToMajor(creditMinor),moneyToMajor(creditMinor),creditMinor,creditMinor,due),d.prepare("INSERT INTO customer_events (id,tenant_id,customer_id,user_id,action,amount_minor,reason,reference) VALUES (?,?,?,?,?,?,?,?)").bind(randomUUID(),T,body.customerId,user,"credit_sale",creditMinor,"Venta a crédito",saleId))}
-  await d.batch(stmts);
+  try{await d.batch(stmts)}catch(error){const duplicate=await d.prepare("SELECT id,total FROM sales WHERE tenant_id=? AND local_id=?").bind(T,body.localId).first<{id:string;total:number}>();if(duplicate)return Response.json({sale:{...duplicate,number:`V-${duplicate.id.slice(0,8).toUpperCase()}`},duplicate:true});throw error}
   return Response.json(
     {
       sale: {
