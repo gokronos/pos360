@@ -24,8 +24,9 @@ type S = {
   sku: string;
   category: string;
   quantity: number;
-  cost: number;
-  price: number;
+  averageCost: number;
+  minimumStock: number;
+  lowStock: number;
 };
 export default function Inventory({
   notify,
@@ -42,6 +43,8 @@ export default function Inventory({
       lots: [],
       serials: [],
       presentations: [],
+      alerts: [],
+      ledger: [],
     }),
     [products, setProducts] = useState<any[]>([]),
     [modal, setModal] = useState<string | null>(null),
@@ -97,9 +100,6 @@ export default function Inventory({
   };
   const warehouses = data.warehouses as W[],
     stocks = data.stocks as S[],
-    expiring = (data.lots || []).filter(
-      (x: any) => x.daysToExpire !== null && x.daysToExpire <= 90,
-    ),
     value = warehouses.reduce((s, x) => s + Number(x.value), 0);
   const open = (type: string) => {
     setForm({
@@ -112,6 +112,8 @@ export default function Inventory({
       toWarehouseId: warehouses[1]?.id || "",
       warehouseId: warehouses[0]?.id,
       productId: products[0]?.id,
+      reason: "",
+      minimumStock: "0",
     });
     setModal(type);
   };
@@ -147,8 +149,8 @@ export default function Inventory({
           tone="orange"
         />
         <K
-          label="Lotes por vencer"
-          value={String(expiring.length)}
+          label="Alertas de stock"
+          value={String((data.alerts || []).length)}
           tone="purple"
         />
       </div>
@@ -156,6 +158,8 @@ export default function Inventory({
         {[
           ["catalog", "Catálogo profesional"],
           ["stock", "Existencias"],
+          ["alerts", "Alertas y mínimos"],
+          ["ledger", "Kardex"],
           ["transfers", "Traslados"],
           ["counts", "Conteos"],
           ["lots", "Lotes y vencimientos"],
@@ -192,7 +196,7 @@ export default function Inventory({
           <article className="panel table-panel">
             <div className="filters">
               <b>Existencias por bodega</b>
-              <span className="db-badge">● Control independiente</span>
+              <div><button className="secondary compact" onClick={()=>open("minimum")}>Definir mínimo</button> <button className="primary compact" onClick={()=>open("adjustment")}>+ Ajuste autorizado</button></div>
             </div>
             <table>
               <thead>
@@ -217,7 +221,7 @@ export default function Inventory({
                     <td>
                       <b>{s.quantity}</b>
                     </td>
-                    <td>{money(s.quantity * s.cost)}</td>
+                    <td>{money(s.quantity * s.averageCost)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -225,6 +229,8 @@ export default function Inventory({
           </article>
         </>
       )}
+      {tab === "alerts" && <article className="panel table-panel"><div className="filters"><b>Stock mínimo y alertas</b><button className="primary compact" onClick={()=>open("minimum")}>Configurar mínimo</button></div><table><thead><tr><th>Producto</th><th>Bodega</th><th>Existencia</th><th>Mínimo</th><th>Estado</th></tr></thead><tbody>{(data.alerts||[]).map((s:any)=><tr key={s.id}><td><b>{s.name}</b></td><td>{s.warehouseName}</td><td>{s.quantity}</td><td>{s.minimumStock}</td><td><span className="status low">Reponer</span></td></tr>)}</tbody></table></article>}
+      {tab === "ledger" && <article className="panel table-panel"><div className="filters"><div><b>Kardex inmutable</b><small> Cada fila conserva responsable, fecha, motivo y saldo resultante.</small></div></div><table><thead><tr><th>Fecha</th><th>Producto / bodega</th><th>Movimiento</th><th>Cantidad</th><th>Saldo anterior</th><th>Saldo final</th><th>Responsable</th><th>Motivo</th></tr></thead><tbody>{(data.ledger||[]).map((m:any)=><tr key={m.id}><td>{new Date(m.createdAt).toLocaleString("es-CO")}</td><td><b>{m.productName}</b><br/><small>{m.warehouseName}</small></td><td>{m.movementType}</td><td className={m.quantity<0?"debt":""}>{m.quantity>0?"+":""}{m.quantity}</td><td>{m.previousBalance}</td><td><b>{m.balanceAfter}</b></td><td>{m.userName}</td><td>{m.reason}<br/><small>{m.reference||"—"}</small></td></tr>)}</tbody></table></article>}
       {tab === "transfers" && (
         <article className="panel table-panel">
           <div className="filters">
@@ -498,7 +504,7 @@ function Modal({
             ? "Registrar lote"
             : type === "serial"
               ? "Registrar serie y garantía"
-              : "Nueva presentación";
+              : type === "adjustment" ? "Ajuste autorizado" : type === "minimum" ? "Configurar stock mínimo" : "Nueva presentación";
   const selW = (key: string) => (
       <select
         value={form[key] || ""}
@@ -554,7 +560,7 @@ function Modal({
                 />
               </label>
             </>
-          ) : type === "transfer" ? (
+          ) : type === "adjustment" ? (<><label>Bodega{selW("warehouseId")}</label><label>Producto{selP}</label><label>Cantidad (+ entrada / − salida)<input type="number" value={form.quantity} onChange={e=>setForm({...form,quantity:e.target.value})}/></label><label>Motivo obligatorio<input value={form.reason||""} onChange={e=>setForm({...form,reason:e.target.value})} placeholder="Explique y soporte el ajuste"/></label></>) : type === "minimum" ? (<><label>Bodega{selW("warehouseId")}</label><label>Producto{selP}</label><label>Stock mínimo<input type="number" min="0" value={form.minimumStock} onChange={e=>setForm({...form,minimumStock:e.target.value})}/></label></>) : type === "transfer" ? (
             <>
               <label>Bodega origen{selW("fromWarehouseId")}</label>
               <label>Bodega destino{selW("toWarehouseId")}</label>
@@ -569,6 +575,7 @@ function Modal({
                   }
                 />
               </label>
+              <label>Motivo<input value={form.reason||""} onChange={e=>setForm({...form,reason:e.target.value})} placeholder="Motivo del traslado"/></label>
             </>
           ) : type === "count" ? (
             <>
@@ -584,6 +591,7 @@ function Modal({
                   }
                 />
               </label>
+              <label>Motivo obligatorio<input value={form.reason||""} onChange={e=>setForm({...form,reason:e.target.value})} placeholder="Diferencia encontrada"/></label>
             </>
           ) : type === "lot" ? (
             <>

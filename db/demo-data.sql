@@ -99,3 +99,17 @@ INSERT OR IGNORE INTO user_branch_access (id,tenant_id,user_id,branch_id) VALUES
 ('uba_compras','tenant_demo','user_compras','branch_centro'),
 ('uba_bodega','tenant_demo','user_bodega','branch_centro'),
 ('uba_contador','tenant_demo','user_contador','branch_centro');
+
+-- La existencia demostrativa también usa la fuente única y deja kardex completo.
+INSERT OR IGNORE INTO inventory_balances (id,tenant_id,warehouse_id,product_id,quantity,average_cost_minor)
+SELECT 'balance_'||s.id,s.tenant_id,s.warehouse_id,s.product_id,s.quantity,p.cost_minor
+FROM warehouse_stock s JOIN products p ON p.id=s.product_id;
+
+INSERT OR IGNORE INTO inventory_balances (id,tenant_id,warehouse_id,product_id,quantity,average_cost_minor)
+SELECT 'balance_'||p.id,p.tenant_id,'warehouse_main',p.id,p.stock,p.cost_minor
+FROM products p WHERE p.tenant_id='tenant_demo' AND p.stock<>0
+AND NOT EXISTS(SELECT 1 FROM inventory_balances b WHERE b.product_id=p.id);
+
+INSERT OR IGNORE INTO inventory_ledger (id,tenant_id,branch_id,warehouse_id,product_id,user_id,movement_type,quantity,previous_balance,balance_after,unit_cost_minor,average_cost_minor,reason,reference,source_type,source_id)
+SELECT 'ledger_'||b.id,b.tenant_id,w.branch_id,b.warehouse_id,b.product_id,'user_preview','initial',b.quantity,0,b.quantity,b.average_cost_minor,b.average_cost_minor,'Carga inicial demostrativa','SEED-POS360','seed',b.id
+FROM inventory_balances b JOIN warehouses w ON w.id=b.warehouse_id WHERE b.tenant_id='tenant_demo';

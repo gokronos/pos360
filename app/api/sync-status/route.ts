@@ -1,5 +1,6 @@
 import { getRuntimeEnv } from "../../../db/runtime-env";
 import { requireAccess } from "../../../db/authz";
+import { inventoryMovement, negativeStockAllowed, resolveWarehouse } from "../../../db/inventory";
 export async function GET(req: Request) {
   const access = await requireAccess(req, "settings");
   if (access.error) return access.error;
@@ -59,19 +60,7 @@ export async function PATCH(req: Request) {
       reason?: string;
     };
     if (payload.adjustment) {
-      const product = await d
-        .prepare("SELECT stock FROM products WHERE id=?")
-        .bind(c.entity_id)
-        .first<{ stock: number }>();
-      if (product) {
-        const next = Math.max(0, product.stock + Number(payload.adjustment));
-        await d
-          .prepare(
-            "UPDATE products SET stock=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-          )
-          .bind(next, c.entity_id)
-          .run();
-      }
+      const warehouse=await resolveWarehouse(T,access.user.branchId),movement=await inventoryMovement({tenantId:T,branchId:access.user.branchId,warehouseId:warehouse.id,productId:c.entity_id,userId:access.user.id,movementType:"sync_adjustment",quantity:Number(payload.adjustment),reason:payload.reason?.trim()||"Resolución de conflicto sincronizado",reference:p.id,sourceType:"sync_conflict",sourceId:p.id,allowNegative:await negativeStockAllowed(T)});await d.batch(movement.statements);
     }
   }
   await d

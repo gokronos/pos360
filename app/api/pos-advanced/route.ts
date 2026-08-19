@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { getRuntimeEnv } from "../../../db/runtime-env";
 import { requireAccess } from "../../../db/authz";
+import { inventoryMovement, resolveWarehouse } from "../../../db/inventory";
 export async function GET(req: Request) {
   const access = await requireAccess(req, "pos");
   if (access.error) return access.error;
@@ -89,9 +90,9 @@ export async function POST(req: Request) {
   if (!p.saleId)
     return Response.json({ error: "Venta requerida" }, { status: 400 });
   const sale = await d
-    .prepare("SELECT id,status,total FROM sales WHERE id=? AND tenant_id=?")
+    .prepare("SELECT id,status,total,warehouse_id warehouseId FROM sales WHERE id=? AND tenant_id=?")
     .bind(p.saleId, T)
-    .first<{ id: string; status: string; total: number }>();
+    .first<{ id: string; status: string; total: number; warehouseId:string|null }>();
   if (!sale)
     return Response.json({ error: "Venta no encontrada" }, { status: 404 });
   if (sale.status !== "completed")
@@ -101,7 +102,7 @@ export async function POST(req: Request) {
     );
   const lines = await d
     .prepare(
-      "SELECT l.id,l.product_id productId,l.variant_id variantId,l.quantity,l.unit_price unitPrice,l.line_total lineTotal,COALESCE(v.stock,p.stock) stock,p.track_inventory trackInventory FROM sale_lines l JOIN products p ON p.id=l.product_id LEFT JOIN product_variants v ON v.id=l.variant_id WHERE l.sale_id=?",
+      "SELECT l.id,l.product_id productId,l.variant_id variantId,l.quantity,l.unit_price unitPrice,l.line_total lineTotal,p.track_inventory trackInventory FROM sale_lines l JOIN products p ON p.id=l.product_id WHERE l.sale_id=?",
     )
     .bind(sale.id)
     .all<{
@@ -111,10 +112,10 @@ export async function POST(req: Request) {
       quantity: number;
       unitPrice: number;
       lineTotal: number;
-      stock: number;
       trackInventory: number;
     }>();
-  const status = p.action === "void" ? "voided" : "returned",
+  const warehouseId=sale.warehouseId||(await resolveWarehouse(T,B)).id,
+    status = p.action === "void" ? "voided" : "returned",
     returnId = randomUUID(),
     number = `${p.action === "void" ? "ANU" : "DEV"}-${Date.now().toString().slice(-7)}`,
     stmts = [
@@ -134,7 +135,6 @@ export async function POST(req: Request) {
         ),
     ];
   for (const l of lines.results || []) {
-    const balance = l.trackInventory ? l.stock + l.quantity : l.stock;
     stmts.push(
       d
         .prepare(
@@ -151,35 +151,7 @@ export async function POST(req: Request) {
         ),
     );
     if (l.trackInventory) {
-      stmts.push(
-        l.variantId
-          ? d
-              .prepare(
-                "UPDATE product_variants SET stock=? WHERE id=? AND tenant_id=?",
-              )
-              .bind(balance, l.variantId, T)
-          : d
-              .prepare(
-                "UPDATE products SET stock=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-              )
-              .bind(balance, l.productId),
-        d
-          .prepare(
-            "INSERT INTO inventory_movements (id,tenant_id,branch_id,product_id,user_id,movement_type,quantity,balance_after,reason,reference) VALUES (?,?,?,?,?,?,?,?,?,?)",
-          )
-          .bind(
-            randomUUID(),
-            T,
-            B,
-            l.productId,
-            user,
-            p.action === "void" ? "sale_void" : "sale_return",
-            l.quantity,
-            balance,
-            p.reason || "Reversión de venta",
-            number,
-          ),
-      );
+      const movement=await inventoryMovement({tenantId:T,branchId:B,warehouseId,productId:l.productId,variantId:l.variantId,userId:user,movementType:p.action==="void"?"sale_void":"sale_return",quantity:l.quantity,reason:p.reason||"Reversión de venta",reference:number,sourceType:"sale_return",sourceId:returnId});stmts.push(...movement.statements);
     }
   }
   await d.batch(stmts);

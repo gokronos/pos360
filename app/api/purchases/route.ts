@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { getRuntimeEnv } from "../../../db/runtime-env";
 import { requireAccess } from "../../../db/authz";
+import { inventoryMovement, resolveWarehouse } from "../../../db/inventory";
+import { parseMoney } from "../../../db/money";
 export async function GET(req: Request) {
   const access = await requireAccess(req, "purchases");
   if (access.error) return access.error;
@@ -130,10 +132,10 @@ export async function PATCH(req: Request) {
         { error: "La orden ya fue recibida" },
         { status: 409 },
       );
-    const percent = Math.min(100, Math.max(1, Number(p.percent || 100))) / 100;
+    const percent = Math.min(100, Math.max(1, Number(p.percent || 100))) / 100, warehouse=await resolveWarehouse(T,B);
     const lines = await d
         .prepare(
-          "SELECT l.*,p.stock currentStock FROM purchase_order_lines l JOIN products p ON p.id=l.product_id WHERE l.order_id=?",
+          "SELECT l.* FROM purchase_order_lines l WHERE l.order_id=?",
         )
         .bind(order.id)
         .all<{
@@ -142,7 +144,6 @@ export async function PATCH(req: Request) {
           quantity: number;
           received_quantity: number;
           unit_cost: number;
-          currentStock: number;
         }>(),
       pending = (lines.results || []).filter(
         (l) => l.quantity > l.received_quantity,
@@ -166,8 +167,7 @@ export async function PATCH(req: Request) {
                 remaining,
                 Math.max(0.01, Math.round(remaining * percent * 100) / 100),
               ),
-        newReceived = l.received_quantity + qty,
-        balance = l.currentStock + qty;
+        newReceived = l.received_quantity + qty;
       receiptTotal += qty * l.unit_cost;
       if (newReceived < l.quantity) complete = false;
       stmts.push(
@@ -176,27 +176,6 @@ export async function PATCH(req: Request) {
             "UPDATE purchase_order_lines SET received_quantity=? WHERE id=?",
           )
           .bind(newReceived, l.id),
-        d
-          .prepare(
-            "UPDATE products SET stock=?,cost=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-          )
-          .bind(balance, l.unit_cost, l.product_id),
-        d
-          .prepare(
-            "INSERT INTO inventory_movements (id,tenant_id,branch_id,product_id,user_id,movement_type,quantity,balance_after,reason,reference) VALUES (?,?,?,?,?,?,?,?,?,?)",
-          )
-          .bind(
-            randomUUID(),
-            T,
-            B,
-            l.product_id,
-            access.user.id,
-            "purchase",
-            qty,
-            balance,
-            "Recepción de compra",
-            ref,
-          ),
         d
           .prepare(
             "INSERT INTO purchase_receipt_lines (id,receipt_id,order_line_id,product_id,quantity,unit_cost,line_total) VALUES (?,?,?,?,?,?,?)",
@@ -211,6 +190,7 @@ export async function PATCH(req: Request) {
             qty * l.unit_cost,
           ),
       );
+      const movement=await inventoryMovement({tenantId:T,branchId:B,warehouseId:warehouse.id,productId:l.product_id,userId:access.user.id,movementType:"purchase",quantity:qty,reason:"Recepción de compra",reference:ref,sourceType:"purchase_receipt",sourceId:receipt,unitCostMinor:parseMoney(l.unit_cost)});stmts.push(...movement.statements,d.prepare("UPDATE products SET cost=?,cost_minor=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(movement.averageCostMinor/100,movement.averageCostMinor,l.product_id));
     }
     stmts.unshift(
       d
@@ -311,11 +291,11 @@ export async function PATCH(req: Request) {
         { error: "Seleccione producto y cantidad" },
         { status: 400 },
       );
-    const line = await d
+    const warehouse=await resolveWarehouse(T,B),line = await d
       .prepare(
-        "SELECT l.product_id,l.unit_cost,p.stock FROM purchase_order_lines l JOIN products p ON p.id=l.product_id WHERE l.order_id=? AND l.product_id=?",
+        "SELECT l.product_id,l.unit_cost,COALESCE((SELECT quantity FROM inventory_balances b WHERE b.warehouse_id=? AND b.product_id=l.product_id AND b.variant_id IS NULL),0) stock FROM purchase_order_lines l WHERE l.order_id=? AND l.product_id=?",
       )
-      .bind(order.id, p.productId)
+      .bind(warehouse.id,order.id, p.productId)
       .first<{ product_id: string; unit_cost: number; stock: number }>();
     if (!line || line.stock < Number(p.quantity))
       return Response.json(
@@ -326,7 +306,6 @@ export async function PATCH(req: Request) {
       total = qty * line.unit_cost,
       ref = `DEV-${Date.now()}`,
       returnId = randomUUID(),
-      balance = line.stock - qty,
       payable = await d
         .prepare("SELECT id,balance FROM payables WHERE order_id=?")
         .bind(order.id)
@@ -358,28 +337,8 @@ export async function PATCH(req: Request) {
             line.unit_cost,
             total,
           ),
-        d
-          .prepare(
-            "UPDATE products SET stock=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-          )
-          .bind(balance, line.product_id),
-        d
-          .prepare(
-            "INSERT INTO inventory_movements (id,tenant_id,branch_id,product_id,user_id,movement_type,quantity,balance_after,reason,reference) VALUES (?,?,?,?,?,?,?,?,?,?)",
-          )
-          .bind(
-            randomUUID(),
-            T,
-            B,
-            line.product_id,
-            access.user.id,
-            "purchase_return",
-            -qty,
-            balance,
-            p.reason || "Devolución al proveedor",
-            ref,
-          ),
       ];
+    const movement=await inventoryMovement({tenantId:T,branchId:B,warehouseId:warehouse.id,productId:line.product_id,userId:access.user.id,movementType:"purchase_return",quantity:-qty,reason:p.reason||"Devolución al proveedor",reference:ref,sourceType:"purchase_return",sourceId:returnId});stmts.push(...movement.statements);
     if (payable) {
       const next = Math.max(0, payable.balance - total);
       stmts.push(

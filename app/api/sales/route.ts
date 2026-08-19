@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { getRuntimeEnv } from "../../../db/runtime-env";
 import { requireAccess } from "../../../db/authz";
 import { moneyToMajor, multiplyMoney, parseMoney } from "../../../db/money";
+import { inventoryMovement, resolveWarehouse } from "../../../db/inventory";
 export async function POST(req: Request) {
   const access = await requireAccess(req, "pos", "create");
   if (access.error) return access.error;
@@ -22,6 +23,7 @@ export async function POST(req: Request) {
     return Response.json({ error: "Venta incompleta" }, { status: 400 });
   const d = getRuntimeEnv().DB,
     user = access.user.id,
+    warehouse = await resolveWarehouse(T, B),
     inventoryPolicy = await d
       .prepare(
         "SELECT allow_negative_stock allowNegativeStock FROM business_settings WHERE tenant_id=?",
@@ -73,11 +75,12 @@ export async function POST(req: Request) {
       item.variantId
         ? d
             .prepare(
-              "SELECT p.id,COALESCE((SELECT pp.price_minor FROM product_prices pp WHERE pp.product_id=p.id AND pp.variant_id=v.id AND pp.price_list_id=? AND pp.min_quantity<=? ORDER BY pp.min_quantity DESC LIMIT 1),v.price_minor) priceMinor,v.stock,p.track_inventory trackInventory,v.id variantId FROM product_variants v JOIN products p ON p.id=v.product_id WHERE v.id=? AND p.id=? AND v.tenant_id=? AND p.tenant_id=? AND v.active=1 AND p.active=1",
+              "SELECT p.id,COALESCE((SELECT pp.price_minor FROM product_prices pp WHERE pp.product_id=p.id AND pp.variant_id=v.id AND pp.price_list_id=? AND pp.min_quantity<=? ORDER BY pp.min_quantity DESC LIMIT 1),v.price_minor) priceMinor,COALESCE((SELECT quantity FROM inventory_balances b WHERE b.warehouse_id=? AND b.product_id=p.id AND b.variant_id=v.id),0) stock,p.track_inventory trackInventory,v.id variantId FROM product_variants v JOIN products p ON p.id=v.product_id WHERE v.id=? AND p.id=? AND v.tenant_id=? AND p.tenant_id=? AND v.active=1 AND p.active=1",
             )
             .bind(
               body.priceListId || "",
               item.quantity,
+              warehouse.id,
               item.variantId,
               item.productId,
               T,
@@ -85,9 +88,9 @@ export async function POST(req: Request) {
             )
         : d
             .prepare(
-              "SELECT id,COALESCE((SELECT pp.price_minor FROM product_prices pp WHERE pp.product_id=products.id AND pp.price_list_id=? AND pp.variant_id IS NULL AND pp.min_quantity<=? ORDER BY pp.min_quantity DESC LIMIT 1),price_minor) priceMinor,stock,track_inventory trackInventory,NULL variantId FROM products WHERE id=? AND tenant_id=? AND active=1",
+              "SELECT id,COALESCE((SELECT pp.price_minor FROM product_prices pp WHERE pp.product_id=products.id AND pp.price_list_id=? AND pp.variant_id IS NULL AND pp.min_quantity<=? ORDER BY pp.min_quantity DESC LIMIT 1),price_minor) priceMinor,COALESCE((SELECT quantity FROM inventory_balances b WHERE b.warehouse_id=? AND b.product_id=products.id AND b.variant_id IS NULL),0) stock,track_inventory trackInventory,NULL variantId FROM products WHERE id=? AND tenant_id=? AND active=1",
             )
-            .bind(body.priceListId || "", item.quantity, item.productId, T)
+            .bind(body.priceListId || "", item.quantity, warehouse.id, item.productId, T)
     ).first<{
       id: string;
       priceMinor: number;
@@ -192,16 +195,21 @@ export async function POST(req: Request) {
         { status: 409 },
       );
   }
-  const saleId = randomUUID(),
-    stmts = [
+  const saleId = randomUUID(), inventoryStatements=[];
+  for(const line of lines.filter((l) => l.trackInventory)){
+    const movement=await inventoryMovement({tenantId:T,branchId:B,warehouseId:warehouse.id,productId:line.productId,variantId:line.variantId,userId:user,movementType:"sale",quantity:-line.quantity,reason:"Venta POS",reference:saleId,sourceType:"sale",sourceId:saleId,allowNegative:Boolean(inventoryPolicy?.allowNegativeStock)});
+    inventoryStatements.push(...movement.statements);
+  }
+  const stmts = [
       d
         .prepare(
-          "INSERT INTO sales (id,tenant_id,branch_id,user_id,customer_id,local_id,total,subtotal_minor,discount_minor,total_minor) VALUES (?,?,?,?,?,?,?,?,?,?)",
+          "INSERT INTO sales (id,tenant_id,branch_id,warehouse_id,user_id,customer_id,local_id,total,subtotal_minor,discount_minor,total_minor) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(
           saleId,
           T,
           B,
+          warehouse.id,
           user,
           body.customerId || null,
           body.localId,
@@ -241,41 +249,7 @@ export async function POST(req: Request) {
             p.amountMinor,
           ),
       ),
-      ...lines
-        .filter((l) => l.trackInventory)
-        .map((l) =>
-          l.variantId
-            ? d
-                .prepare(
-                  "UPDATE product_variants SET stock=? WHERE id=? AND tenant_id=?",
-                )
-                .bind(l.balance, l.variantId, T)
-            : d
-                .prepare(
-                  "UPDATE products SET stock=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                )
-                .bind(l.balance, l.productId),
-        ),
-      ...lines
-        .filter((l) => l.trackInventory)
-        .map((l) =>
-          d
-            .prepare(
-              "INSERT INTO inventory_movements (id,tenant_id,branch_id,product_id,user_id,movement_type,quantity,balance_after,reason,reference) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            )
-            .bind(
-              randomUUID(),
-              T,
-              B,
-              l.productId,
-              user,
-              "sale",
-              -l.quantity,
-              l.balance,
-              "Venta POS",
-              saleId,
-            ),
-        ),
+      ...inventoryStatements,
       d
         .prepare(
           "INSERT INTO sync_events (id,tenant_id,node_id,event_type,entity_id,payload,status) VALUES (?,?,?,?,?,?,?)",

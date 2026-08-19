@@ -1,23 +1,8 @@
-import { getRuntimeEnv } from "../../../db/runtime-env";
 import { requireAccess } from "../../../db/authz";
-export async function GET(req: Request) {
-  const access = await requireAccess(req, "inventory");
-  if (access.error) return access.error;
-  const url = new URL(req.url),
-    productId = url.searchParams.get("productId"),
-    d = getRuntimeEnv().DB;
-  const base =
-      "SELECT m.id,m.movement_type movementType,m.quantity,m.balance_after balanceAfter,m.reason,m.reference,m.created_at createdAt,p.name productName,u.display_name userName FROM inventory_movements m JOIN products p ON p.id=m.product_id JOIN app_users u ON u.id=m.user_id WHERE m.tenant_id=?",
-    result = productId
-      ? await d
-          .prepare(
-            base + " AND m.product_id=? ORDER BY m.created_at DESC LIMIT 100",
-          )
-          .bind(access.user.tenantId, productId)
-          .all()
-      : await d
-          .prepare(base + " ORDER BY m.created_at DESC LIMIT 100")
-          .bind(access.user.tenantId)
-          .all();
-  return Response.json({ movements: result.results });
+import { getRuntimeEnv } from "../../../db/runtime-env";
+export async function GET(req:Request){
+  const access=await requireAccess(req,"inventory");if(access.error)return access.error;
+  const url=new URL(req.url),warehouse=url.searchParams.get("warehouseId"),product=url.searchParams.get("productId"),where=["l.tenant_id=?"],args:unknown[]=[access.user.tenantId];
+  if(warehouse){where.push("l.warehouse_id=?");args.push(warehouse)}if(product){where.push("l.product_id=?");args.push(product)}
+  const rows=await getRuntimeEnv().DB.prepare(`SELECT l.id,l.movement_type movementType,l.quantity,l.previous_balance previousBalance,l.balance_after balanceAfter,l.unit_cost_minor unitCostMinor,l.average_cost_minor averageCostMinor,l.reason,l.reference,l.source_type sourceType,l.created_at createdAt,p.name productName,w.name warehouseName,u.display_name userName FROM inventory_ledger l JOIN products p ON p.id=l.product_id JOIN warehouses w ON w.id=l.warehouse_id JOIN app_users u ON u.id=l.user_id WHERE ${where.join(" AND ")} ORDER BY l.created_at DESC,l.rowid DESC LIMIT 500`).bind(...args).all();return Response.json({movements:rows.results});
 }

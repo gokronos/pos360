@@ -181,6 +181,12 @@ export const inventoryMovements = sqliteTable("inventory_movements", {
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
 });
+export const inventoryBalances = sqliteTable("inventory_balances", {
+  id: text("id").primaryKey(), tenantId: text("tenant_id").notNull(), warehouseId: text("warehouse_id").notNull(), productId: text("product_id").notNull(), variantId: text("variant_id"), quantity: real("quantity").notNull().default(0), averageCostMinor: integer("average_cost_minor").notNull().default(0), minimumStock: real("minimum_stock").notNull().default(0), updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+export const inventoryLedger = sqliteTable("inventory_ledger", {
+  id: text("id").primaryKey(), tenantId: text("tenant_id").notNull(), branchId: text("branch_id").notNull(), warehouseId: text("warehouse_id").notNull(), productId: text("product_id").notNull(), variantId: text("variant_id"), userId: text("user_id").notNull(), movementType: text("movement_type").notNull(), quantity: real("quantity").notNull(), previousBalance: real("previous_balance").notNull(), balanceAfter: real("balance_after").notNull(), unitCostMinor: integer("unit_cost_minor").notNull().default(0), averageCostMinor: integer("average_cost_minor").notNull().default(0), reason: text("reason").notNull(), reference: text("reference"), sourceType: text("source_type"), sourceId: text("source_id"), createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
 export const cashRegisters = sqliteTable("cash_registers", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id")

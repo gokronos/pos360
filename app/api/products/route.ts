@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { getRuntimeEnv } from "../../../db/runtime-env";
 import { requireAccess } from "../../../db/authz";
 import { moneyToMajor, parseMoney } from "../../../db/money";
+import { inventoryMovement, negativeStockAllowed, resolveWarehouse } from "../../../db/inventory";
 export async function GET(req: Request) {
   const access = await requireAccess(req, "inventory");
   if (access.error) return access.error;
@@ -24,7 +25,7 @@ export async function GET(req: Request) {
   }
   const rows = await d
     .prepare(
-      "SELECT id,sku,barcode,name,category,COALESCE((SELECT pp.price_minor FROM product_prices pp WHERE pp.product_id=products.id AND pp.price_list_id=? AND pp.variant_id IS NULL AND pp.min_quantity<=1 ORDER BY pp.min_quantity DESC LIMIT 1),price_minor) priceMinor,cost_minor costMinor,COALESCE((SELECT pp.price_minor FROM product_prices pp WHERE pp.product_id=products.id AND pp.price_list_id=? AND pp.variant_id IS NULL AND pp.min_quantity<=1 ORDER BY pp.min_quantity DESC LIMIT 1),price_minor)/100.0 price,cost_minor/100.0 cost,stock,product_type productType,track_inventory trackInventory,version,active,updated_at updatedAt FROM products WHERE tenant_id=? AND (name LIKE ? OR sku LIKE ? OR barcode LIKE ? OR EXISTS(SELECT 1 FROM product_barcodes bc WHERE bc.product_id=products.id AND bc.code LIKE ?)) ORDER BY active DESC,name LIMIT 200",
+      "SELECT id,sku,barcode,name,category,COALESCE((SELECT pp.price_minor FROM product_prices pp WHERE pp.product_id=products.id AND pp.price_list_id=? AND pp.variant_id IS NULL AND pp.min_quantity<=1 ORDER BY pp.min_quantity DESC LIMIT 1),price_minor) priceMinor,cost_minor costMinor,COALESCE((SELECT pp.price_minor FROM product_prices pp WHERE pp.product_id=products.id AND pp.price_list_id=? AND pp.variant_id IS NULL AND pp.min_quantity<=1 ORDER BY pp.min_quantity DESC LIMIT 1),price_minor)/100.0 price,cost_minor/100.0 cost,COALESCE((SELECT SUM(quantity) FROM inventory_balances b WHERE b.product_id=products.id AND b.variant_id IS NULL),0) stock,product_type productType,track_inventory trackInventory,version,active,updated_at updatedAt FROM products WHERE tenant_id=? AND (name LIKE ? OR sku LIKE ? OR barcode LIKE ? OR EXISTS(SELECT 1 FROM product_barcodes bc WHERE bc.product_id=products.id AND bc.code LIKE ?)) ORDER BY active DESC,name LIMIT 200",
     )
     .bind(priceListId, priceListId, access.user.tenantId, q, q, q, q)
     .all();
@@ -44,7 +45,7 @@ export async function GET(req: Request) {
     : { results: [] };
   const variants = await d
     .prepare(
-      "SELECT v.id,v.product_id productId,v.name,v.sku,v.attributes,v.price_minor priceMinor,v.cost_minor costMinor,v.stock,v.active,(SELECT GROUP_CONCAT(code,',') FROM product_barcodes b WHERE b.variant_id=v.id) barcodeList FROM product_variants v WHERE v.tenant_id=? AND v.active=1 ORDER BY v.name",
+      "SELECT v.id,v.product_id productId,v.name,v.sku,v.attributes,v.price_minor priceMinor,v.cost_minor costMinor,COALESCE((SELECT SUM(quantity) FROM inventory_balances b WHERE b.variant_id=v.id),0) stock,v.active,(SELECT GROUP_CONCAT(code,',') FROM product_barcodes b WHERE b.variant_id=v.id) barcodeList FROM product_variants v WHERE v.tenant_id=? AND v.active=1 ORDER BY v.name",
     )
     .bind(access.user.tenantId)
     .all();
@@ -110,9 +111,10 @@ export async function POST(req: Request) {
     stock = Number(p.stock || 0),
     uid = access.user.id,
     T = access.user.tenantId,
-    B = access.user.branchId;
+    B = access.user.branchId,
+    warehouse = await resolveWarehouse(T, B);
   try {
-    await d.batch([
+    const statements = [
       d
         .prepare(
           "INSERT INTO products (id,tenant_id,sku,barcode,name,category,price,cost,stock,price_minor,cost_minor) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
@@ -126,27 +128,13 @@ export async function POST(req: Request) {
           p.category.trim(),
           moneyToMajor(priceMinor),
           moneyToMajor(costMinor),
-          stock,
+          0,
           priceMinor,
           costMinor,
         ),
-      d
-        .prepare(
-          "INSERT INTO inventory_movements (id,tenant_id,branch_id,product_id,user_id,movement_type,quantity,balance_after,reason,reference) VALUES (?,?,?,?,?,?,?,?,?,?)",
-        )
-        .bind(
-          randomUUID(),
-          T,
-          B,
-          id,
-          uid,
-          "initial",
-          stock,
-          stock,
-          "Inventario inicial",
-          p.sku.trim(),
-        ),
-    ]);
+    ];
+    if(stock){const movement=await inventoryMovement({tenantId:T,branchId:B,warehouseId:warehouse.id,productId:id,userId:uid,movementType:"initial",quantity:stock,reason:"Inventario inicial",reference:p.sku.trim(),sourceType:"product",sourceId:id,unitCostMinor:costMinor});statements.push(...movement.statements)}
+    await d.batch(statements);
     return Response.json(
       {
         product: {
@@ -231,13 +219,7 @@ export async function PATCH(req: Request) {
       { status: 409 },
     );
   }
-  const adjustment = Number(p.adjustment || 0),
-    nextStock = current.stock + adjustment;
-  if (nextStock < 0)
-    return Response.json(
-      { error: "El ajuste dejaría existencias negativas" },
-      { status: 400 },
-    );
+  const adjustment = Number(p.adjustment || 0);
   const sets: string[] = [],
     values: unknown[] = [];
   for (const [key, col] of [
@@ -273,10 +255,6 @@ export async function PATCH(req: Request) {
     sets.push("active=?");
     values.push(p.active ? 1 : 0);
   }
-  if (adjustment) {
-    sets.push("stock=?");
-    values.push(nextStock);
-  }
   sets.push("version=version+1", "updated_at=CURRENT_TIMESTAMP");
   values.push(p.id, T);
   const statements = [
@@ -286,29 +264,14 @@ export async function PATCH(req: Request) {
       )
       .bind(...values),
   ];
-  if (adjustment)
-    statements.push(
-      d
-        .prepare(
-          "INSERT INTO inventory_movements (id,tenant_id,branch_id,product_id,user_id,movement_type,quantity,balance_after,reason,reference) VALUES (?,?,?,?,?,?,?,?,?,?)",
-        )
-        .bind(
-          randomUUID(),
-          T,
-          B,
-          p.id,
-          access.user.id,
-          adjustment > 0 ? "adjustment_in" : "adjustment_out",
-          adjustment,
-          nextStock,
-          p.reason?.trim() || "Ajuste manual",
-          `AJ-${Date.now()}`,
-        ),
-    );
+  if(adjustment){
+    if(!p.reason?.trim())return Response.json({error:"El motivo del ajuste es obligatorio"},{status:400});
+    const warehouse=await resolveWarehouse(T,B),movement=await inventoryMovement({tenantId:T,branchId:B,warehouseId:warehouse.id,productId:p.id,userId:access.user.id,movementType:adjustment>0?"adjustment_in":"adjustment_out",quantity:adjustment,reason:p.reason,reference:`AJ-${Date.now()}`,sourceType:"adjustment",allowNegative:await negativeStockAllowed(T)});statements.push(...movement.statements);
+  }
   await d.batch(statements);
   const updated = await d
     .prepare(
-      "SELECT id,sku,barcode,name,category,price_minor priceMinor,cost_minor costMinor,price_minor/100.0 price,cost_minor/100.0 cost,stock,version,active,updated_at updatedAt FROM products WHERE id=?",
+      "SELECT id,sku,barcode,name,category,price_minor priceMinor,cost_minor costMinor,price_minor/100.0 price,cost_minor/100.0 cost,COALESCE((SELECT SUM(quantity) FROM inventory_balances b WHERE b.product_id=products.id AND b.variant_id IS NULL),0) stock,version,active,updated_at updatedAt FROM products WHERE id=?",
     )
     .bind(p.id)
     .first();

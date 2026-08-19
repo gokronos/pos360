@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { requireAccess } from "../../../db/authz";
 import { getRuntimeEnv } from "../../../db/runtime-env";
 import { moneyToMajor, parseMoney } from "../../../db/money";
+import { inventoryMovement, resolveWarehouse } from "../../../db/inventory";
 
 type VariantInput = {
   name?: string;
@@ -403,7 +404,7 @@ export async function POST(req: Request) {
             category?.name || "Sin categoría",
             moneyToMajor(priceMinor),
             moneyToMajor(costMinor),
-            trackInventory ? stock : 0,
+            0,
             type,
             categoryId,
             subcategoryId,
@@ -415,7 +416,8 @@ export async function POST(req: Request) {
             priceMinor,
             costMinor,
           ),
-      ];
+      ], initialEntries:{variantId:string|null;quantity:number;costMinor:number}[]=[];
+    if(trackInventory&&stock)initialEntries.push({variantId:null,quantity:stock,costMinor});
     barcodes.forEach((code, index) =>
       statements.push(
         d
@@ -453,9 +455,10 @@ export async function POST(req: Request) {
             JSON.stringify(input.attributes || {}),
             variantPrice,
             variantCost,
-            Number(input.stock || 0),
+            0,
           ),
       );
+      if(trackInventory&&Number(input.stock||0))initialEntries.push({variantId,quantity:Number(input.stock),costMinor:variantCost});
       for (const code of Array.from(
         new Set((input.barcodes || []).map(clean).filter(Boolean)),
       ))
@@ -516,25 +519,8 @@ export async function POST(req: Request) {
           )
           .bind(randomUUID(), T, defaultList.id, id, priceMinor),
       );
-    if (trackInventory && stock)
-      statements.push(
-        d
-          .prepare(
-            "INSERT INTO inventory_movements (id,tenant_id,branch_id,product_id,user_id,movement_type,quantity,balance_after,reason,reference) VALUES (?,?,?,?,?,?,?,?,?,?)",
-          )
-          .bind(
-            randomUUID(),
-            T,
-            access.user.branchId,
-            id,
-            access.user.id,
-            "initial",
-            stock,
-            stock,
-            "Inventario inicial",
-            sku,
-          ),
-      );
+    const warehouse=initialEntries.length?await resolveWarehouse(T,access.user.branchId):null;
+    for(const entry of initialEntries){const movement=await inventoryMovement({tenantId:T,branchId:access.user.branchId,warehouseId:warehouse!.id,productId:id,variantId:entry.variantId,userId:access.user.id,movementType:"initial",quantity:entry.quantity,reason:"Inventario inicial",reference:sku,sourceType:"product",sourceId:id,unitCostMinor:entry.costMinor});statements.push(...movement.statements)}
     statements.push(
       d
         .prepare(
