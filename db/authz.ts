@@ -20,7 +20,6 @@ export const roleModules: Record<AppRole, string[]> = {
     "customers",
     "reports",
     "settings",
-    "saas",
     "users",
   ],
   admin: [
@@ -79,9 +78,10 @@ export async function getAccess(
     req.headers.get("x-pos360-tenant-id") ||
     cookies.pos360_tenant ||
     null;
+  const platformAdmin=await d.prepare("SELECT id FROM platform_admins WHERE email=? AND active=1").bind(email).first();
   const user = await d
     .prepare(
-      `SELECT id,email,display_name displayName,role,active,tenant_id tenantId FROM app_users WHERE email=? AND active=1 AND (? IS NULL OR tenant_id=?) ORDER BY created_at LIMIT 1`,
+      `SELECT u.id,u.email,u.display_name displayName,u.role,u.active,u.tenant_id tenantId FROM app_users u JOIN tenants t ON t.id=u.tenant_id WHERE u.email=? AND u.active=1 AND t.status!='suspended' AND (? IS NULL OR u.tenant_id=?) ORDER BY u.created_at LIMIT 1`,
     )
     .bind(email, wantedTenant, wantedTenant)
     .first<Omit<AccessUser, "branchId" | "modules">>();
@@ -98,7 +98,7 @@ export async function getAccess(
     .bind(user.tenantId, wantedBranch, wantedBranch, user.id, user.id)
     .first<{ id: string }>();
   if (!branch) return null;
-  return { ...user, branchId: branch.id, modules: roleModules[user.role] };
+  return { ...user, branchId: branch.id, modules: platformAdmin?[...new Set([...roleModules[user.role],"saas"])]:roleModules[user.role] };
 }
 
 export async function requireAccess(

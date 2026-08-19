@@ -15,6 +15,7 @@ import { readJson } from "./api-client";
 import BusinessSetupWizard from "./business-setup-wizard";
 import ReportsReal, { DashboardReal } from "./reports-real";
 import SectorTools from "./sector-tools";
+import PlatformOwner from "./platform-owner";
 type View =
   | "dashboard"
   | "pos"
@@ -1412,113 +1413,7 @@ function SettingsLegacy({ notify }: { notify: (s: string) => void }) {
   );
 }
 function SaaS() {
-  return (
-    <>
-      <div className="page-intro">
-        <div>
-          <span className="eyebrow">Administración de plataforma</span>
-          <h2>Panel POS360</h2>
-          <p>Empresas, suscripciones y salud general del servicio.</p>
-        </div>
-        <button className="primary">+ Registrar empresa</button>
-      </div>
-      <div className="kpi-grid">
-        <KPI
-          label="Empresas activas"
-          value="184"
-          change="+14 este mes"
-          tone="green"
-          icon="◇"
-        />
-        <KPI
-          label="Ingresos mensuales"
-          value="$ 18,6 M"
-          change="MRR estimado"
-          tone="blue"
-          icon="$"
-        />
-        <KPI
-          label="Terminales conectadas"
-          value="428"
-          change="97,8% en línea"
-          tone="purple"
-          icon="▣"
-        />
-        <KPI
-          label="Requieren atención"
-          value="7"
-          change="Pago o sincronización"
-          tone="orange"
-          icon="!"
-        />
-      </div>
-      <article className="panel table-panel">
-        <div className="panel-head">
-          <div>
-            <h3>Empresas recientes</h3>
-            <p>Estado comercial y operativo</p>
-          </div>
-          <button>Ver todas</button>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Empresa</th>
-              <th>Sector</th>
-              <th>Plan</th>
-              <th>Sedes</th>
-              <th>Última sincronización</th>
-              <th>Estado</th>
-            </tr>
-          </thead>
-          <tbody>
-            {[
-              [
-                "Supermercado El Portal",
-                "Supermercado",
-                "Profesional",
-                "3",
-                "Hace 2 min",
-                "Activo",
-              ],
-              [
-                "Droguería Vida Sana",
-                "Droguería",
-                "Negocio",
-                "2",
-                "Hace 6 min",
-                "Activo",
-              ],
-              [
-                "Ferretería El Martillo",
-                "Ferretería",
-                "Esencial",
-                "1",
-                "Hace 18 min",
-                "Prueba",
-              ],
-              [
-                "Tiendas La 14",
-                "Tiendas",
-                "Cadena",
-                "8",
-                "Hace 1 min",
-                "Activo",
-              ],
-            ].map((r, i) => (
-              <tr key={i}>
-                {r.map((c, j) => (
-                  <td key={j}>
-                    {j === 5 ? <span className="status ok">{c}</span> : c}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </article>
-    </>
-  );
+  return <PlatformOwner />;
 }
 function KPI({
   label,

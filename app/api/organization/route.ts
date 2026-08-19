@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { requireAccess } from "../../../db/authz";
 import { getRuntimeEnv } from "../../../db/runtime-env";
+import {checkSubscriptionLimit} from "../../../db/subscription";
 
 export async function GET(req: Request) {
   const access = await requireAccess(req, "settings");
@@ -97,6 +98,7 @@ export async function POST(req: Request) {
       .bind(id, T, p.branchId, p.name)
       .run();
   } else {
+    const limit=await checkSubscriptionLimit(T,"terminals");if(!limit.allowed)return Response.json({error:limit.error},{status:409});
     if (!p.code)
       return Response.json(
         { error: "Código de terminal requerido" },

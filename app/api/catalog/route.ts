@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { requireAccess } from "../../../db/authz";
 import { getRuntimeEnv } from "../../../db/runtime-env";
 import { moneyToMajor, parseMoney } from "../../../db/money";
+import {checkSubscriptionLimit} from "../../../db/subscription";
 import { inventoryMovement, resolveWarehouse } from "../../../db/inventory";
 
 type VariantInput = {
@@ -376,6 +377,7 @@ export async function POST(req: Request) {
         { error: "Las imágenes deben usar una URL http o https" },
         { status: 400 },
       );
+    const limit=await checkSubscriptionLimit(T,"products");if(!limit.allowed)return Response.json({error:limit.error},{status:409});
     const id = randomUUID(),
       primaryBarcode = barcodes[0] || null,
       category = categoryId

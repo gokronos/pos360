@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { getRuntimeEnv } from "../../../db/runtime-env";
 import { roleModules, roles } from "../../../db/authz";
+import {checkSubscriptionLimit} from "../../../db/subscription";
 
 const emailOf = (r: Request) =>
   r.headers.get("oai-authenticated-user-email") || "preview@pos360.local";
@@ -159,6 +160,7 @@ export async function POST(req: Request) {
           "INSERT INTO business_settings (id,tenant_id,main_branch_id,onboarding_completed) VALUES (?,?,?,0)",
         )
         .bind(randomUUID(), tenantId, branchId),
+      d.prepare("INSERT INTO tenant_subscriptions(id,tenant_id,plan_id,status,trial_ends_at,current_period_start,current_period_end) VALUES(?,?,'plan_trial','trial',datetime('now','+14 days'),date('now'),date('now','+14 days'))").bind(randomUUID(),tenantId),
     ];
     for (const [role, modules] of Object.entries(roleModules))
       for (const moduleName of modules)
@@ -206,6 +208,7 @@ export async function POST(req: Request) {
       { status: 403 },
     );
   if (p.action === "branch") {
+    const limit=await checkSubscriptionLimit(p.tenantId,"branches");if(!limit.allowed)return Response.json({error:limit.error},{status:409});
     if (!p.name)
       return Response.json(
         { error: "Ingrese el nombre de la sede" },
@@ -228,6 +231,7 @@ export async function POST(req: Request) {
     return Response.json({ id }, { status: 201 });
   }
   if (p.action === "user") {
+    const limit=await checkSubscriptionLimit(p.tenantId,"users");if(!limit.allowed)return Response.json({error:limit.error},{status:409});
     if (
       !p.email ||
       !p.displayName ||
