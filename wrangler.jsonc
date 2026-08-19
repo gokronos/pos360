@@ -9,6 +9,7 @@
       "binding": "DB",
       "database_name": "pos360-production",
       "database_id": "67796e70-bf26-464d-b931-0d9b358292ee"
+      "migrations_dir": "drizzle"
     }
   ]
 }
