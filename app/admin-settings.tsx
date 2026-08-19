@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { readJson } from "./api-client";
 import SyncCenter from "./sync-center";
 type Company = {
   id: string;
@@ -68,7 +69,7 @@ export default function AdminSettings({
     await fetch("/api/bootstrap");
     const id = next || tenantId,
       r = await fetch(`/api/admin${id ? `?tenantId=${id}` : ""}`),
-      d = await r.json();
+      d = await readJson<any>(r);
     if (!r.ok) return notify(d.error);
     setCompanies(d.companies || []);
     setTenantId(d.tenantId);
@@ -91,7 +92,7 @@ export default function AdminSettings({
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
       }),
-      d = await r.json();
+      d = await readJson<any>(r);
     if (!r.ok) return notify(d.error);
     setModal(null);
     notify(
@@ -112,7 +113,7 @@ export default function AdminSettings({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ tenantId, userId: u.id, ...change }),
       }),
-      d = await r.json();
+      d = await readJson<any>(r);
     if (!r.ok) return notify(d.error);
     notify("Permisos del usuario actualizados");
     load();

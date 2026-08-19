@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import { offlinePost } from "./offline-sync";
-import { apiJson } from "./api-client";
+import { apiJson, readJson } from "./api-client";
 const money = (n: number) =>
   new Intl.NumberFormat("es-CO", {
     style: "currency",
@@ -132,7 +132,7 @@ export default function POS({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "open", amount: Number(base) }),
       }),
-      d = await r.json();
+      d = await readJson<any>(r);
     if (!r.ok) return notify(d.error);
     setCash(d.session);
     setModal(null);
@@ -144,7 +144,7 @@ export default function POS({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "close", amount: Number(declared) }),
       }),
-      d = await r.json();
+      d = await readJson<any>(r);
     if (!r.ok) return notify(d.error);
     setCash(null);
     setModal(null);
@@ -166,7 +166,7 @@ export default function POS({
         total,
       },
       r = await offlinePost("/api/sales", payload),
-      d = await r.json();
+      d = await readJson<any>(r);
     setBusy(false);
     if (!r.ok) return notify(d.error);
     setReceipt({
@@ -202,7 +202,7 @@ export default function POS({
           notes,
         }),
       }),
-      d = await r.json();
+      d = await readJson<any>(r);
     if (!r.ok) return notify(d.error);
     setCart([]);
     setModal(null);
@@ -215,7 +215,7 @@ export default function POS({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ id }),
       }),
-      d = await r.json();
+      d = await readJson<any>(r);
     if (!r.ok) return notify(d.error);
     setCart(d.items.map((x: any) => ({ id: x.productId, qty: x.quantity })));
     setCustomerId(d.customerId || "");
@@ -233,7 +233,7 @@ export default function POS({
           reason: returnReason,
         }),
       }),
-      d = await r.json();
+      d = await readJson<any>(r);
     if (!r.ok) return notify(d.error);
     setModal(null);
     notify(`${d.number} procesada e inventario restaurado`);

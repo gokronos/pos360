@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { readJson } from "./api-client";
 
 const money = (n: number) =>
   new Intl.NumberFormat("es-CO", {
@@ -86,7 +87,7 @@ export default function Purchases({ notify }: { notify: (s: string) => void }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       }),
-      d = await r.json();
+      d = await readJson<any>(r);
     if (!r.ok) return notify(d.error);
     setMode(null);
     notify(

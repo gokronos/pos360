@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { getDeviceId } from "./offline-sync";
+import { apiJson, readJson } from "./api-client";
 export default function SyncCenter({
   notify,
 }: {
@@ -27,10 +28,7 @@ export default function SyncCenter({
       createdAt: string;
     }[];
   }>({});
-  const load = () =>
-    fetch("/api/sync-status")
-      .then((r) => r.json())
-      .then(setData);
+  const load = () => apiJson<typeof data>("/api/sync-status").then(setData);
   useEffect(() => {
     load();
   }, []);
@@ -40,7 +38,7 @@ export default function SyncCenter({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ id, resolution }),
       }),
-      d = await r.json();
+      d = await readJson<{ resolved: boolean }>(r);
     if (!r.ok) return notify(d.error);
     notify(
       resolution === "server"

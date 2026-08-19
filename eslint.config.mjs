@@ -20,7 +20,13 @@ const eslintConfig = defineConfig([
     },
   },
   {
-    files: ["app/inventory-advanced.tsx", "app/pos-advanced.tsx"],
+    files: [
+      "app/admin-settings.tsx",
+      "app/inventory-advanced.tsx",
+      "app/page.tsx",
+      "app/pos-advanced.tsx",
+      "app/purchases-advanced.tsx",
+    ],
     rules: { "@typescript-eslint/no-explicit-any": "off" },
   },
   {

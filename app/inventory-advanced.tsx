@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { readJson } from "./api-client";
 const money = (n: number) =>
   new Intl.NumberFormat("es-CO", {
     style: "currency",
@@ -56,8 +57,8 @@ export default function Inventory({
         fetch("/api/inventory-advanced"),
         fetch("/api/products"),
       ]),
-      ad = await a.json(),
-      pd = await p.json();
+      ad = await readJson<any>(a),
+      pd = await readJson<any>(p);
     setData(ad);
     setProducts(pd.products || []);
   };
@@ -70,7 +71,7 @@ export default function Inventory({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action, ...form }),
       }),
-      d = await r.json();
+      d = await readJson<any>(r);
     if (!r.ok) return notify(d.error);
     setModal(null);
     notify(
@@ -88,7 +89,7 @@ export default function Inventory({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "receive", transferId: id }),
       }),
-      d = await r.json();
+      d = await readJson<any>(r);
     if (!r.ok) return notify(d.error);
     notify("Mercancía recibida en la bodega destino");
     load();

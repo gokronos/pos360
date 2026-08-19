@@ -10,6 +10,7 @@ import SyncStatus, {
 import { useAccess } from "./access-control";
 import POS from "./pos-advanced";
 import Inventory from "./inventory-advanced";
+import { readJson } from "./api-client";
 type View =
   | "dashboard"
   | "pos"
@@ -180,8 +181,7 @@ export default function Home() {
         <header className="topbar">
           <div>
             <small>
-              {session?.tenant.name || "POS360"} ·{" "}
-              {session?.branch.name || "Sede"}
+              {`${session?.tenant.name || "POS360"} · ${session?.branch.name || "Sede"}`}
             </small>
             <h1>{title}</h1>
           </div>
@@ -464,9 +464,9 @@ function POSLegacy({
         fetch("/api/cash"),
         fetch("/api/customers"),
       ]),
-      pd = await p.json(),
-      cd = await c.json(),
-      cud = await cu.json();
+      pd = await readJson<any>(p),
+      cd = await readJson<any>(c),
+      cud = await readJson<any>(cu);
     setItems((pd.products || []).filter((x: P) => x.active));
     setCash(cd.session || null);
     setCustomers(cud.customers || []);
@@ -524,7 +524,7 @@ function POSLegacy({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "open", amount: Number(base) }),
       }),
-      d = await r.json();
+      d = await readJson<any>(r);
     if (!r.ok) return notify(d.error || "No fue posible abrir la caja");
     setCash(d.session);
     setModal(null);
@@ -542,7 +542,7 @@ function POSLegacy({
         items: basket.map((x) => ({ productId: x.id, quantity: x.qty })),
       },
       r = await offlinePost("/api/sales", payload),
-      d = await r.json();
+      d = await readJson<any>(r);
     setProcessing(false);
     if (!r.ok) {
       if (d.needsCashOpen) setModal("cash");
@@ -880,7 +880,7 @@ function InventoryLegacy({ notify }: { notify: (s: string) => void }) {
     try {
       await fetch("/api/bootstrap");
       const r = await fetch(`/api/products?q=${encodeURIComponent(q)}`),
-        d = await r.json();
+        d = await readJson<any>(r);
       setItems(d.products || []);
     } catch {
       notify("No fue posible cargar el inventario");
@@ -903,7 +903,7 @@ function InventoryLegacy({ notify }: { notify: (s: string) => void }) {
         stock: Number(form.stock),
       },
       r = await offlinePost("/api/products", payload),
-      d = await r.json();
+      d = await readJson<any>(r);
     if (!r.ok) return notify(d.error || "Revise los datos");
     setModal(null);
     setForm({
@@ -931,7 +931,7 @@ function InventoryLegacy({ notify }: { notify: (s: string) => void }) {
         version: selected.version,
         deviceId: getDeviceId(),
       }),
-      d = await r.json();
+      d = await readJson<any>(r);
     if (!r.ok) return notify(d.error || "No fue posible ajustar");
     setModal(null);
     notify(
@@ -1585,7 +1585,7 @@ function Clients({ notify }: { notify: (s: string) => void }) {
   const load = async () => {
     await fetch("/api/bootstrap");
     const r = await fetch(`/api/customers?q=${encodeURIComponent(q)}`),
-      d = await r.json();
+      d = await readJson<any>(r);
     setItems(d.customers || []);
   };
   useEffect(() => {
@@ -1598,7 +1598,7 @@ function Clients({ notify }: { notify: (s: string) => void }) {
         creditDays: Number(form.creditDays),
       },
       r = await offlinePost("/api/customers", payload),
-      d = await r.json();
+      d = await readJson<any>(r);
     if (!r.ok) return notify(d.error);
     setModal(null);
     notify(
@@ -1615,7 +1615,7 @@ function Clients({ notify }: { notify: (s: string) => void }) {
         amount: Number(payment.amount),
         method: payment.method,
       }),
-      d = await r.json();
+      d = await readJson<any>(r);
     if (!r.ok) return notify(d.error);
     setModal(null);
     notify(
@@ -1942,9 +1942,9 @@ function PurchasesLegacy({ notify }: { notify: (s: string) => void }) {
         fetch("/api/purchases"),
         fetch("/api/products"),
       ]),
-      sd = await s.json(),
-      od = await o.json(),
-      pd = await p.json();
+      sd = await readJson<any>(s),
+      od = await readJson<any>(o),
+      pd = await readJson<any>(p);
     setSuppliers(sd.suppliers || []);
     setOrders(od.orders || []);
     setProductsList(pd.products || []);
@@ -1961,7 +1961,7 @@ function PurchasesLegacy({ notify }: { notify: (s: string) => void }) {
           paymentDays: Number(supplier.paymentDays),
         }),
       }),
-      d = await r.json();
+      d = await readJson<any>(r);
     if (!r.ok) return notify(d.error);
     setModal(null);
     notify("Proveedor guardado");
@@ -1983,7 +1983,7 @@ function PurchasesLegacy({ notify }: { notify: (s: string) => void }) {
           ],
         }),
       }),
-      d = await r.json();
+      d = await readJson<any>(r);
     if (!r.ok) return notify(d.error);
     setModal(null);
     notify(`Orden ${d.order.number} creada`);
@@ -2001,7 +2001,7 @@ function PurchasesLegacy({ notify }: { notify: (s: string) => void }) {
           method: pay.method,
         }),
       }),
-      d = await r.json();
+      d = await readJson<any>(r);
     if (!r.ok) return notify(d.error);
     setModal(null);
     notify(
