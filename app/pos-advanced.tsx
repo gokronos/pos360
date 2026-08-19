@@ -62,6 +62,8 @@ export default function POS({
     [query, setQuery] = useState(""),
     [favorites,setFavorites]=useState<string[]>([]),
     [favoritesOnly,setFavoritesOnly]=useState(false),
+    [sectorPromotions,setSectorPromotions]=useState<{productId:string;type:string;valueMinor:number;minimumQuantity:number;startsAt:string;endsAt:string;active:number}[]>([]),
+    [pharmacyPrices,setPharmacyPrices]=useState<{productId:string;fractionPriceMinor:number;fractionationEnabled:number}[]>([]),
     [priceLists, setPriceLists] = useState<
       { id: string; name: string; currency: string; isDefault: number }[]
     >([]),
@@ -120,6 +122,7 @@ export default function POS({
       nit: "",
       currency: "COP",
       receiptFormat: "thermal_80",
+      sector: "retail",
     });
   const searchRef=useRef<HTMLInputElement>(null),busyRef=useRef(false),operationIdRef=useRef<string|null>(null);
   const money = (value: number) => formatCurrency(value, business.currency);
@@ -149,6 +152,7 @@ export default function POS({
         nit?: string;
         currency?: string;
         receiptFormat?: string;
+        sector?: string;
       };
     }>("/api/bootstrap");
     setBusiness({
@@ -156,8 +160,9 @@ export default function POS({
       nit: bootstrap.configuration.nit || "",
       currency: bootstrap.configuration.currency || "COP",
       receiptFormat: bootstrap.configuration.receiptFormat || "thermal_80",
+      sector: bootstrap.configuration.sector || "retail",
     });
-    const [initialProducts, cd, cud, ad] = await Promise.all([
+    const [initialProducts, cd, cud, ad, sectorData] = await Promise.all([
       apiJson<{
         products: (P & { active?: number })[];
         priceLists: typeof priceLists;
@@ -165,6 +170,7 @@ export default function POS({
       apiJson<any>("/api/cash"),
       apiJson<{ customers: typeof customers }>("/api/customers"),
       apiJson<{ drafts: Draft[]; sales: Sale[];favorites:string[] }>("/api/pos-advanced"),
+      apiJson<{feature:string;features?:{featureKey:string;enabled:number}[];promotions?:typeof sectorPromotions;pharmacyRules?:typeof pharmacyPrices}>("/api/sector"),
     ]);
     const defaultList = initialProducts.priceLists?.find((list) =>
       Boolean(list.isDefault),
@@ -184,6 +190,8 @@ export default function POS({
     setDrafts(ad.drafts || []);
     setSales(ad.sales || []);
     setFavorites(ad.favorites||[]);
+    setSectorPromotions(sectorData.features?.find(x=>x.featureKey===sectorData.feature)?.enabled===0?[]:sectorData.promotions||[]);
+    setPharmacyPrices(sectorData.features?.find(x=>x.featureKey===sectorData.feature)?.enabled===0?[]:sectorData.pharmacyRules||[]);
   };
   useEffect(() => {
     void load().catch((error) =>
@@ -196,7 +204,8 @@ export default function POS({
       const tier = [...(product.priceTiers || [])]
         .filter((candidate) => candidate.minQuantity <= quantity)
         .sort((a, b) => b.minQuantity - a.minQuantity)[0];
-      return tier ? tier.priceMinor / 100 : product.price;
+      const pharmacy=pharmacyPrices.find(x=>x.fractionationEnabled&&x.productId===(product.productId||product.id)),base=pharmacy?pharmacy.fractionPriceMinor/100:tier ? tier.priceMinor / 100 : product.price,now=new Date().toISOString().replace("T"," ").slice(0,19),promotion=sectorPromotions.filter(x=>x.active&&x.productId===(product.productId||product.id)&&x.minimumQuantity<=quantity&&x.startsAt<=now&&x.endsAt>=now).sort((a,b)=>a.type==="fixed_price"?-1:b.type==="fixed_price"?1:b.valueMinor-a.valueMinor)[0];
+      return promotion?.type==="fixed_price"?promotion.valueMinor/100:promotion?.type==="percent"?Math.max(0,Math.round(base*100*(10000-promotion.valueMinor)/10000)/100):base;
     },
     selectPriceList = async (id: string) => {
       setPriceListId(id);
@@ -238,6 +247,12 @@ export default function POS({
       setCart((c) =>
         c.map((x) => (x.id === id ? { ...x, qty: Math.max(1, x.qty + n) } : x)),
       );
+  const addQuantity=(id:string,quantity:number)=>setCart((current)=>current.some((item)=>item.id===id)?current.map((item)=>item.id===id?{...item,qty:Number((item.qty+quantity).toFixed(6))}:item):[...current,{id,qty:quantity}]);
+  const scanCode=async(code:string)=>{
+    const normalized=code.trim().toLowerCase(),match=products.find(p=>p.barcode?.toLowerCase()===normalized||p.sku.toLowerCase()===normalized||p.barcodes?.some(b=>b.toLowerCase()===normalized));
+    if(match){add(match.id);setQuery("");notify(`${match.name} agregado por código`);return}
+    if(business.sector==="retail"&&/^\d{13}$/.test(normalized)){try{const data=await apiJson<any>(`/api/sector?scaleCode=${normalized}`),product=products.find(p=>(p.productId||p.id)===data.scale.productId);if(product){addQuantity(product.id,data.scale.quantity);setQuery("");notify(`${data.scale.name}: ${data.scale.quantity} kg leídos de báscula`)}}catch(error){notify(error instanceof Error?error.message:"No fue posible leer la báscula")}}
+  };
   const toggleFavorite=async(product:P)=>{const productId=product.productId||product.id,r=await fetch("/api/pos-advanced",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"favorite",productId})}),d=await readJson<any>(r);if(!r.ok)return notify(d.error);setFavorites(x=>d.favorite?[...new Set([...x,productId])]:x.filter(id=>id!==productId))};
   const open = async () => {
     const r = await fetch("/api/cash", {
@@ -450,7 +465,7 @@ export default function POS({
               autoFocus
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e)=>{if(e.key==="Enter"){const code=query.trim().toLowerCase(),match=products.find(p=>p.barcode?.toLowerCase()===code||p.sku.toLowerCase()===code||p.barcodes?.some(b=>b.toLowerCase()===code));if(match){e.preventDefault();add(match.id);setQuery("");notify(`${match.name} agregado por código`)}}}}
+              onKeyDown={(e)=>{if(e.key==="Enter"){e.preventDefault();void scanCode(query)}}}
               placeholder="Escanee código o busque producto..."
             />
             <kbd>F2</kbd>

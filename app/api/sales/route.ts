@@ -33,6 +33,10 @@ export async function POST(req: Request) {
       )
       .bind(T)
       .first<{ allowNegativeStock: number }>(),
+    sectorSettings = await d
+      .prepare("SELECT s.sector,COALESCE((SELECT enabled FROM sector_features f WHERE f.tenant_id=s.tenant_id AND f.feature_key=CASE s.sector WHEN 'pharmacy' THEN 'pharmacy' WHEN 'hardware' THEN 'hardware' WHEN 'retail' THEN 'supermarket' ELSE 'quick_store' END),1) sectorEnabled FROM business_settings s WHERE s.tenant_id=?")
+      .bind(T)
+      .first<{sector:string;sectorEnabled:number}>(),
     session = await d
       .prepare(
         "SELECT s.id,s.terminal_id terminalId,s.register_id registerId FROM cash_sessions s JOIN terminals t ON t.id=s.terminal_id AND t.status='active' JOIN terminal_user_access a ON a.terminal_id=t.id AND a.user_id=s.user_id AND a.active=1 WHERE s.tenant_id=? AND s.branch_id=? AND s.user_id=? AND s.status='open' ORDER BY s.opened_at DESC LIMIT 1",
@@ -73,6 +77,8 @@ export async function POST(req: Request) {
     trackInventory: number;
     variantId: string | null;
   }[] = [];
+  const lotAllocations:{id:string;saleLineId:string;lotId:string;quantity:number}[]=[];
+  const comboInventory:{productId:string;quantity:number}[]=[];
   for (const item of body.items) {
     const p = await (
       item.variantId
@@ -112,10 +118,24 @@ export async function POST(req: Request) {
       p.stock < item.quantity
     )
       return Response.json({ error: "Stock insuficiente" }, { status: 409 });
+    const pharmacyPrice=sectorSettings?.sector==="pharmacy"&&sectorSettings.sectorEnabled?await d.prepare("SELECT fraction_price_minor fractionPriceMinor FROM pharmacy_product_settings WHERE tenant_id=? AND product_id=? AND fractionation_enabled=1").bind(T,p.id).first<{fractionPriceMinor:number}>():null;
+    if(pharmacyPrice?.fractionPriceMinor)p.priceMinor=pharmacyPrice.fractionPriceMinor;
+    const promotion=sectorSettings?.sector==="retail"&&sectorSettings.sectorEnabled?await d.prepare("SELECT type,value_minor valueMinor FROM sector_promotions WHERE tenant_id=? AND product_id=? AND active=1 AND minimum_quantity<=? AND starts_at<=datetime('now') AND ends_at>=datetime('now') ORDER BY CASE type WHEN 'fixed_price' THEN 0 ELSE 1 END,value_minor DESC LIMIT 1").bind(T,p.id,item.quantity).first<{type:string;valueMinor:number}>():null;
+    if(promotion?.type==="fixed_price")p.priceMinor=promotion.valueMinor;
+    else if(promotion?.type==="percent")p.priceMinor=Math.max(0,Math.round(p.priceMinor*(10000-promotion.valueMinor)/10000));
     const lineTotalMinor = multiplyMoney(p.priceMinor, item.quantity);
     subtotalMinor += lineTotalMinor;
+    const lineId=randomUUID();
+    if(sectorSettings?.sector==="retail"&&sectorSettings.sectorEnabled){
+      const combo=await d.prepare("SELECT id FROM sector_combos WHERE tenant_id=? AND product_id=? AND active=1").bind(T,p.id).first<{id:string}>();
+      if(combo){const components=await d.prepare("SELECT i.product_id productId,i.quantity,COALESCE((SELECT quantity FROM inventory_balances b WHERE b.warehouse_id=? AND b.product_id=i.product_id AND b.variant_id IS NULL),0) stock,p.track_inventory trackInventory FROM sector_combo_items i JOIN products p ON p.id=i.product_id AND p.tenant_id=? WHERE i.combo_id=?").bind(warehouse.id,T,combo.id).all<{productId:string;quantity:number;stock:number;trackInventory:number}>();if(!components.results.length)return Response.json({error:"El combo no tiene componentes"},{status:409});for(const component of components.results.filter(x=>x.trackInventory)){const required=component.quantity*item.quantity;if(!inventoryPolicy?.allowNegativeStock&&component.stock<required)return Response.json({error:"Stock insuficiente en un componente del combo"},{status:409});comboInventory.push({productId:component.productId,quantity:required})}p.trackInventory=0;}
+    }
+    if(sectorSettings?.sector==="pharmacy"&&sectorSettings.sectorEnabled&&p.trackInventory){
+      const rule=await d.prepare("SELECT requires_lot requiresLot FROM pharmacy_product_settings WHERE tenant_id=? AND product_id=?").bind(T,p.id).first<{requiresLot:number}>();
+      if(rule?.requiresLot){const lots=await d.prepare("SELECT id,quantity FROM product_lots WHERE tenant_id=? AND warehouse_id=? AND product_id=? AND quantity>0 AND (expiration_date IS NULL OR expiration_date>=date('now')) ORDER BY CASE WHEN expiration_date IS NULL THEN 1 ELSE 0 END,expiration_date,created_at").bind(T,warehouse.id,p.id).all<{id:string;quantity:number}>();let pending=item.quantity;for(const lot of lots.results){if(pending<=0)break;const take=Math.min(pending,Number(lot.quantity));lotAllocations.push({id:randomUUID(),saleLineId:lineId,lotId:lot.id,quantity:take});pending=Number((pending-take).toFixed(6))}if(pending>0)return Response.json({error:"No hay lotes vigentes suficientes para completar la venta (FEFO)"},{status:409});}
+    }
     lines.push({
-      id: randomUUID(),
+      id: lineId,
       productId: p.id,
       quantity: item.quantity,
       priceMinor: p.priceMinor,
@@ -190,6 +210,7 @@ export async function POST(req: Request) {
     const movement=await inventoryMovement({tenantId:T,branchId:B,warehouseId:warehouse.id,productId:line.productId,variantId:line.variantId,userId:user,movementType:"sale",quantity:-line.quantity,reason:"Venta POS",reference:saleId,sourceType:"sale",sourceId:saleId,allowNegative:Boolean(inventoryPolicy?.allowNegativeStock)});
     inventoryStatements.push(...movement.statements);
   }
+  for(const component of comboInventory){const movement=await inventoryMovement({tenantId:T,branchId:B,warehouseId:warehouse.id,productId:component.productId,userId:user,movementType:"combo_sale",quantity:-component.quantity,reason:"Componente vendido en combo",reference:saleId,sourceType:"sale",sourceId:saleId,allowNegative:Boolean(inventoryPolicy?.allowNegativeStock)});inventoryStatements.push(...movement.statements)}
   const stmts = [
       d
         .prepare(
@@ -228,6 +249,10 @@ export async function POST(req: Request) {
             l.lineTotalMinor,
           ),
       ),
+      ...lotAllocations.flatMap((allocation)=>[
+        d.prepare("UPDATE product_lots SET quantity=quantity-? WHERE id=? AND tenant_id=? AND quantity>=?").bind(allocation.quantity,allocation.lotId,T,allocation.quantity),
+        d.prepare("INSERT INTO sale_lot_allocations(id,tenant_id,sale_id,sale_line_id,lot_id,quantity,strategy) VALUES(?,?,?,?,?,?,'FEFO')").bind(allocation.id,T,saleId,allocation.saleLineId,allocation.lotId,allocation.quantity),
+      ]),
       ...payments.map((p) =>
         d
           .prepare(

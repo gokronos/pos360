@@ -14,6 +14,7 @@ import Inventory from "./inventory-advanced";
 import { readJson } from "./api-client";
 import BusinessSetupWizard from "./business-setup-wizard";
 import ReportsReal, { DashboardReal } from "./reports-real";
+import SectorTools from "./sector-tools";
 type View =
   | "dashboard"
   | "pos"
@@ -21,6 +22,7 @@ type View =
   | "compras"
   | "clientes"
   | "reportes"
+  | "sector"
   | "configuracion"
   | "saas";
 const nav: { id: View; label: string; icon: string }[] = [
@@ -30,6 +32,7 @@ const nav: { id: View; label: string; icon: string }[] = [
   { id: "compras", label: "Compras", icon: "↓" },
   { id: "clientes", label: "Clientes", icon: "◎" },
   { id: "reportes", label: "Reportes", icon: "↗" },
+  { id: "sector", label: "Mi sector", icon: "✦" },
   { id: "configuracion", label: "Configuración", icon: "⚙" },
   { id: "saas", label: "Panel POS360", icon: "◇" },
 ];
@@ -40,6 +43,7 @@ const moduleFor: Record<View, string> = {
   compras: "purchases",
   clientes: "customers",
   reportes: "reports",
+  sector: "dashboard",
   configuracion: "settings",
   saas: "saas",
 };
@@ -230,6 +234,7 @@ export default function Home() {
             <Customers notify={notify} />
           )}{" "}
           {view === "reportes" && can("reports") && <ReportsReal />}{" "}
+          {view === "sector" && can("dashboard") && <SectorTools notify={notify} />}{" "}
           {view === "configuracion" && can("settings") && (
             <Settings notify={notify} />
           )}{" "}
