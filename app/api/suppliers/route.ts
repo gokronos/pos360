@@ -1,3 +1,60 @@
-import { randomUUID } from "node:crypto";import { getRuntimeEnv } from "../../../db/runtime-env";import { requireAccess } from "../../../db/authz";const T="tenant_demo";
-export async function GET(req:Request){const d=getRuntimeEnv().DB,q=`%${new URL(req.url).searchParams.get("q")||""}%`,rows=await d.prepare("SELECT s.id,s.document_number documentNumber,s.name,s.contact_name contactName,s.phone,s.email,s.payment_days paymentDays,s.active,COALESCE(SUM(p.balance),0) balance FROM suppliers s LEFT JOIN payables p ON p.supplier_id=s.id WHERE s.tenant_id=? AND (s.name LIKE ? OR s.document_number LIKE ?) GROUP BY s.id ORDER BY s.name").bind(T,q,q).all();return Response.json({suppliers:rows.results});}
-export async function POST(req:Request){const access=await requireAccess(req,"purchases");if(access.error)return access.error;const p=await req.json() as {documentNumber?:string;name?:string;contactName?:string;phone?:string;email?:string;paymentDays?:number};if(!p.documentNumber?.trim()||!p.name?.trim())return Response.json({error:"NIT/documento y nombre son obligatorios"},{status:400});try{const id=randomUUID();await getRuntimeEnv().DB.prepare("INSERT INTO suppliers (id,tenant_id,document_number,name,contact_name,phone,email,payment_days) VALUES (?,?,?,?,?,?,?,?)").bind(id,T,p.documentNumber.trim(),p.name.trim(),p.contactName||null,p.phone||null,p.email||null,Number(p.paymentDays||30)).run();return Response.json({supplier:{id,...p,balance:0,active:1}},{status:201});}catch{return Response.json({error:"El proveedor ya existe o los datos no son válidos"},{status:409});}}
+import { randomUUID } from "node:crypto";
+import { getRuntimeEnv } from "../../../db/runtime-env";
+import { requireAccess } from "../../../db/authz";
+export async function GET(req: Request) {
+  const access = await requireAccess(req, "purchases");
+  if (access.error) return access.error;
+  const d = getRuntimeEnv().DB,
+    q = `%${new URL(req.url).searchParams.get("q") || ""}%`,
+    rows = await d
+      .prepare(
+        "SELECT s.id,s.document_number documentNumber,s.name,s.contact_name contactName,s.phone,s.email,s.payment_days paymentDays,s.active,COALESCE(SUM(p.balance),0) balance FROM suppliers s LEFT JOIN payables p ON p.supplier_id=s.id WHERE s.tenant_id=? AND (s.name LIKE ? OR s.document_number LIKE ?) GROUP BY s.id ORDER BY s.name",
+      )
+      .bind(access.user.tenantId, q, q)
+      .all();
+  return Response.json({ suppliers: rows.results });
+}
+export async function POST(req: Request) {
+  const access = await requireAccess(req, "purchases", "create");
+  if (access.error) return access.error;
+  const p = (await req.json()) as {
+    documentNumber?: string;
+    name?: string;
+    contactName?: string;
+    phone?: string;
+    email?: string;
+    paymentDays?: number;
+  };
+  if (!p.documentNumber?.trim() || !p.name?.trim())
+    return Response.json(
+      { error: "NIT/documento y nombre son obligatorios" },
+      { status: 400 },
+    );
+  try {
+    const id = randomUUID();
+    await getRuntimeEnv()
+      .DB.prepare(
+        "INSERT INTO suppliers (id,tenant_id,document_number,name,contact_name,phone,email,payment_days) VALUES (?,?,?,?,?,?,?,?)",
+      )
+      .bind(
+        id,
+        access.user.tenantId,
+        p.documentNumber.trim(),
+        p.name.trim(),
+        p.contactName || null,
+        p.phone || null,
+        p.email || null,
+        Number(p.paymentDays || 30),
+      )
+      .run();
+    return Response.json(
+      { supplier: { id, ...p, balance: 0, active: 1 } },
+      { status: 201 },
+    );
+  } catch {
+    return Response.json(
+      { error: "El proveedor ya existe o los datos no son válidos" },
+      { status: 409 },
+    );
+  }
+}

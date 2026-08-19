@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { getRuntimeEnv } from "../../../db/runtime-env";
 import { requireAccess } from "../../../db/authz";
-const T = "tenant_demo",
-  B = "branch_centro";
 export async function POST(req: Request) {
-  const access = await requireAccess(req, "pos");
+  const access = await requireAccess(req, "pos", "create");
   if (access.error) return access.error;
+  const T = access.user.tenantId,
+    B = access.user.branchId;
   const body = (await req.json()) as {
     localId?: string;
     method?: string;

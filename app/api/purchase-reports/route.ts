@@ -1,3 +1,31 @@
 import { getRuntimeEnv } from "../../../db/runtime-env";
-const T="tenant_demo";
-export async function GET(){const d=getRuntimeEnv().DB;const summary=await d.prepare("SELECT COALESCE(SUM(balance),0) payable,COALESCE(SUM(CASE WHEN balance>0 AND due_date<date('now') THEN balance ELSE 0 END),0) overdue,COUNT(CASE WHEN balance>0 THEN 1 END) openAccounts,COALESCE(SUM(CASE WHEN created_at>=date('now','start of month') THEN original_amount ELSE 0 END),0) monthPurchases FROM payables WHERE tenant_id=?").bind(T).first();const aging=await d.prepare("SELECT s.name supplier,SUM(p.balance) balance,MIN(p.due_date) nextDue,SUM(CASE WHEN p.due_date<date('now') THEN p.balance ELSE 0 END) overdue FROM payables p JOIN suppliers s ON s.id=p.supplier_id WHERE p.tenant_id=? AND p.balance>0 GROUP BY s.id,s.name ORDER BY overdue DESC,balance DESC").bind(T).all();const returns=await d.prepare("SELECT r.reference,r.total,r.reason,r.created_at createdAt,s.name supplier FROM purchase_returns r JOIN suppliers s ON s.id=r.supplier_id WHERE r.tenant_id=? ORDER BY r.created_at DESC LIMIT 20").bind(T).all();return Response.json({summary,aging:aging.results,returns:returns.results});}
+import { requireAccess } from "../../../db/authz";
+export async function GET(req: Request) {
+  const access = await requireAccess(req, "reports");
+  if (access.error) return access.error;
+  const T = access.user.tenantId;
+  const d = getRuntimeEnv().DB;
+  const summary = await d
+    .prepare(
+      "SELECT COALESCE(SUM(balance),0) payable,COALESCE(SUM(CASE WHEN balance>0 AND due_date<date('now') THEN balance ELSE 0 END),0) overdue,COUNT(CASE WHEN balance>0 THEN 1 END) openAccounts,COALESCE(SUM(CASE WHEN created_at>=date('now','start of month') THEN original_amount ELSE 0 END),0) monthPurchases FROM payables WHERE tenant_id=?",
+    )
+    .bind(T)
+    .first();
+  const aging = await d
+    .prepare(
+      "SELECT s.name supplier,SUM(p.balance) balance,MIN(p.due_date) nextDue,SUM(CASE WHEN p.due_date<date('now') THEN p.balance ELSE 0 END) overdue FROM payables p JOIN suppliers s ON s.id=p.supplier_id WHERE p.tenant_id=? AND p.balance>0 GROUP BY s.id,s.name ORDER BY overdue DESC,balance DESC",
+    )
+    .bind(T)
+    .all();
+  const returns = await d
+    .prepare(
+      "SELECT r.reference,r.total,r.reason,r.created_at createdAt,s.name supplier FROM purchase_returns r JOIN suppliers s ON s.id=r.supplier_id WHERE r.tenant_id=? ORDER BY r.created_at DESC LIMIT 20",
+    )
+    .bind(T)
+    .all();
+  return Response.json({
+    summary,
+    aging: aging.results,
+    returns: returns.results,
+  });
+}

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { readJson } from "./api-client";
+import { apiJson, readJson } from "./api-client";
 import SyncCenter from "./sync-center";
 type Company = {
   id: string;
@@ -18,21 +18,44 @@ type User = {
   role: string;
   active: number;
   branches: string;
+  branchIds: string | null;
 };
 type Branch = { id: string; name: string };
+type Permission = {
+  role: string;
+  module: string;
+  canView: number;
+  canCreate: number;
+  canEdit: number;
+  canDelete: number;
+};
+const modules = [
+  "dashboard",
+  "pos",
+  "inventory",
+  "purchases",
+  "customers",
+  "reports",
+  "settings",
+  "users",
+];
 const roleNames: { [key: string]: string } = {
   owner: "Propietario",
   admin: "Administrador",
+  supervisor: "Supervisor",
   cashier: "Cajero",
+  purchasing: "Compras",
   warehouse: "Bodeguero",
-  accountant: "Contador",
+  auditor: "Auditor",
 };
 const rolePerms: { [key: string]: string[] } = {
   owner: ["Todos los módulos", "Usuarios", "Configuración"],
   admin: ["Operación completa", "Usuarios", "Reportes"],
+  supervisor: ["Autorizaciones", "Operación", "Reportes"],
   cashier: ["Ventas", "Caja", "Clientes"],
+  purchasing: ["Compras", "Proveedores", "Inventario"],
   warehouse: ["Inventario", "Compras", "Recepciones"],
-  accountant: ["Reportes", "Cartera", "Cuentas por pagar"],
+  auditor: ["Reportes", "Cartera", "Auditoría"],
 };
 
 export default function AdminSettings({
@@ -41,12 +64,19 @@ export default function AdminSettings({
   notify: (s: string) => void;
 }) {
   const [tab, setTab] = useState<
-      "companies" | "users" | "branches" | "audit" | "sync"
+      | "companies"
+      | "users"
+      | "permissions"
+      | "branches"
+      | "resources"
+      | "audit"
+      | "sync"
     >("users"),
     [tenantId, setTenantId] = useState(""),
     [companies, setCompanies] = useState<Company[]>([]),
     [users, setUsers] = useState<User[]>([]),
     [branches, setBranches] = useState<Branch[]>([]),
+    [permissions, setPermissions] = useState<Permission[]>([]),
     [logs, setLogs] = useState<
       {
         action: string;
@@ -75,7 +105,19 @@ export default function AdminSettings({
     setTenantId(d.tenantId);
     setUsers(d.users || []);
     setBranches(d.branches || []);
+    setPermissions(d.permissions || []);
     setLogs(d.logs || []);
+    if (next && d.branches?.[0]?.id) {
+      await apiJson("/api/context", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          tenantId: d.tenantId,
+          branchId: d.branches[0].id,
+        }),
+      });
+      window.location.reload();
+    }
   };
   useEffect(() => {
     load();
@@ -106,7 +148,7 @@ export default function AdminSettings({
   };
   const update = async (
     u: User,
-    change: { role?: string; active?: boolean },
+    change: { role?: string; active?: boolean; branchId?: string | null },
   ) => {
     const r = await fetch("/api/admin", {
         method: "PATCH",
@@ -119,6 +161,46 @@ export default function AdminSettings({
     load();
   };
   const current = companies.find((c) => c.id === tenantId);
+  const togglePermission = async (
+    role: string,
+    module: string,
+    permission: "view" | "create" | "edit" | "delete",
+    value: boolean,
+  ) => {
+    try {
+      await apiJson("/api/admin", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "permission",
+          tenantId,
+          role,
+          module,
+          permission,
+          value,
+        }),
+      });
+      notify("Permiso actualizado y auditado");
+      await load();
+    } catch (error) {
+      notify(
+        error instanceof Error
+          ? error.message
+          : "No fue posible actualizar el permiso",
+      );
+    }
+  };
+  const permissionValue = (
+    role: string,
+    module: string,
+    key: keyof Pick<
+      Permission,
+      "canView" | "canCreate" | "canEdit" | "canDelete"
+    >,
+  ) =>
+    Boolean(
+      permissions.find((p) => p.role === role && p.module === module)?.[key],
+    );
   return (
     <>
       <div className="page-intro">
@@ -164,10 +246,22 @@ export default function AdminSettings({
           Sedes
         </button>
         <button
+          className={tab === "permissions" ? "active" : ""}
+          onClick={() => setTab("permissions")}
+        >
+          Matriz de permisos
+        </button>
+        <button
           className={tab === "companies" ? "active" : ""}
           onClick={() => setTab("companies")}
         >
           Empresas
+        </button>
+        <button
+          className={tab === "resources" ? "active" : ""}
+          onClick={() => setTab("resources")}
+        >
+          Bodegas, cajas y terminales
         </button>
         <button
           className={tab === "sync" ? "active" : ""}
@@ -225,7 +319,26 @@ export default function AdminSettings({
                       ))}
                     </select>
                   </td>
-                  <td>{u.branches || "Todas las sedes"}</td>
+                  <td>
+                    <select
+                      className="inline-select"
+                      value={u.branchIds?.split(",")[0] || ""}
+                      disabled={u.role === "owner"}
+                      onChange={(e) =>
+                        update(u, { branchId: e.target.value || null })
+                      }
+                    >
+                      <option value="">Todas las sedes</option>
+                      {branches.map((branch) => (
+                        <option key={branch.id} value={branch.id}>
+                          {branch.name}
+                        </option>
+                      ))}
+                    </select>
+                    <small className="cell-sub">
+                      {u.branches || "Sin restricción por sede"}
+                    </small>
+                  </td>
                   <td>
                     <div className="permission-tags">
                       {(rolePerms[u.role] || []).map((p) => (
@@ -283,6 +396,67 @@ export default function AdminSettings({
           </div>
         </>
       )}
+      {tab === "permissions" && (
+        <article className="panel table-panel">
+          <div className="filters">
+            <b>Permisos por rol, módulo y acción</b>
+            <span className="db-badge">● Cambios auditados</span>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Rol</th>
+                <th>Módulo</th>
+                <th>Ver</th>
+                <th>Crear</th>
+                <th>Editar</th>
+                <th>Eliminar</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.keys(roleNames)
+                .filter((role) => role !== "owner")
+                .flatMap((role) =>
+                  modules.map((module) => (
+                    <tr key={`${role}-${module}`}>
+                      <td>{roleNames[role]}</td>
+                      <td>{module}</td>
+                      {(["view", "create", "edit", "delete"] as const).map(
+                        (action) => {
+                          const key = (
+                              {
+                                view: "canView",
+                                create: "canCreate",
+                                edit: "canEdit",
+                                delete: "canDelete",
+                              } as const
+                            )[action],
+                            checked = permissionValue(role, module, key);
+                          return (
+                            <td key={action}>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) =>
+                                  togglePermission(
+                                    role,
+                                    module,
+                                    action,
+                                    e.target.checked,
+                                  )
+                                }
+                              />
+                            </td>
+                          );
+                        },
+                      )}
+                    </tr>
+                  )),
+                )}
+            </tbody>
+          </table>
+        </article>
+      )}
       {tab === "companies" && (
         <div className="company-grid">
           {companies.map((c) => (
@@ -314,6 +488,7 @@ export default function AdminSettings({
           ))}
         </div>
       )}
+      {tab === "resources" && <OrganizationResources notify={notify} />}
       {tab === "sync" && <SyncCenter notify={notify} />}
       {tab === "audit" && (
         <article className="panel table-panel">
@@ -491,6 +666,183 @@ export default function AdminSettings({
           </section>
         </div>
       )}
+    </>
+  );
+}
+
+type Resource = {
+  id: string;
+  name: string;
+  code?: string;
+  branchId: string;
+  branchName: string;
+  registerId?: string;
+  status?: string;
+};
+function OrganizationResources({
+  notify,
+}: {
+  notify: (message: string) => void;
+}) {
+  const [data, setData] = useState<{
+    branches: Branch[];
+    warehouses: Resource[];
+    registers: Resource[];
+    terminals: Resource[];
+  }>({ branches: [], warehouses: [], registers: [], terminals: [] });
+  const [form, setForm] = useState({
+    action: "warehouse",
+    branchId: "",
+    registerId: "",
+    name: "",
+    code: "",
+  });
+  const load = () =>
+    apiJson<typeof data>("/api/organization")
+      .then((next) => {
+        setData(next);
+        setForm((current) => ({
+          ...current,
+          branchId: current.branchId || next.branches[0]?.id || "",
+        }));
+      })
+      .catch((error) =>
+        notify(
+          error instanceof Error
+            ? error.message
+            : "No fue posible cargar la organización",
+        ),
+      );
+  useEffect(() => {
+    void load();
+  }, []);
+  const save = async () => {
+    try {
+      await apiJson("/api/organization", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(form),
+      });
+      notify("Recurso creado y auditado");
+      setForm({ ...form, name: "", code: "" });
+      await load();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "No fue posible guardar");
+    }
+  };
+  const rows = [
+    ...data.warehouses.map((x) => ({ ...x, type: "Bodega" })),
+    ...data.registers.map((x) => ({ ...x, type: "Caja" })),
+    ...data.terminals.map((x) => ({ ...x, type: "Terminal" })),
+  ];
+  return (
+    <>
+      <div className="tab-heading">
+        <div>
+          <h3>Operación por sede</h3>
+          <p>
+            Bodegas, cajas registradoras y terminales vinculadas a la empresa
+            activa.
+          </p>
+        </div>
+      </div>
+      <article className="panel">
+        <div className="form-grid">
+          <label>
+            Tipo
+            <select
+              value={form.action}
+              onChange={(e) =>
+                setForm({ ...form, action: e.target.value, registerId: "" })
+              }
+            >
+              <option value="warehouse">Bodega</option>
+              <option value="register">Caja</option>
+              <option value="terminal">Terminal</option>
+            </select>
+          </label>
+          <label>
+            Sede
+            <select
+              value={form.branchId}
+              onChange={(e) => setForm({ ...form, branchId: e.target.value })}
+            >
+              {data.branches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Nombre
+            <input
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+            />
+          </label>
+          {form.action !== "register" && (
+            <label>
+              Código
+              <input
+                value={form.code}
+                onChange={(e) => setForm({ ...form, code: e.target.value })}
+              />
+            </label>
+          )}
+          {form.action === "terminal" && (
+            <label>
+              Caja asociada
+              <select
+                value={form.registerId}
+                onChange={(e) =>
+                  setForm({ ...form, registerId: e.target.value })
+                }
+              >
+                <option value="">Sin caja</option>
+                {data.registers
+                  .filter((r) => r.branchId === form.branchId)
+                  .map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          )}
+          <button className="primary" onClick={save}>
+            Crear recurso
+          </button>
+        </div>
+      </article>
+      <article className="panel table-panel">
+        <table>
+          <thead>
+            <tr>
+              <th>Tipo</th>
+              <th>Nombre</th>
+              <th>Código</th>
+              <th>Sede</th>
+              <th>Estado</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={`${row.type}-${row.id}`}>
+                <td>{row.type}</td>
+                <td>
+                  <b>{row.name}</b>
+                </td>
+                <td>{row.code || "—"}</td>
+                <td>{row.branchName}</td>
+                <td>
+                  <span className="status ok">{row.status || "Activa"}</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </article>
     </>
   );
 }

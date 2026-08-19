@@ -16,7 +16,8 @@
     "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate",
     "db:migrate:local": "bash scripts/db-local.sh migrate",
     "db:seed:local": "bash scripts/db-local.sh seed",
-    "db:setup:local": "bash scripts/db-local.sh setup"
+    "db:setup:local": "bash scripts/db-local.sh setup",
+    "test:isolation": "bash scripts/test-tenant-isolation.sh"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",

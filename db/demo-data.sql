@@ -14,8 +14,10 @@ INSERT OR IGNORE INTO app_users (id,tenant_id,email,display_name,role,active) VA
 ('user_preview','tenant_demo','preview@pos360.local','Administrador local POS360','owner',1),
 ('user_admin','tenant_demo','admin@pos360.local','Administrador POS360','owner',1),
 ('user_cajero','tenant_demo','cajero@pos360.local','Carlos Cajero','cashier',1),
+('user_supervisor','tenant_demo','supervisor@pos360.local','Sandra Supervisora','supervisor',1),
+('user_compras','tenant_demo','compras@pos360.local','Paula Compras','purchasing',1),
 ('user_bodega','tenant_demo','bodega@pos360.local','Beatriz Bodega','warehouse',1),
-('user_contador','tenant_demo','contador@pos360.local','Camilo Contador','accountant',1),
+('user_contador','tenant_demo','contador@pos360.local','Camilo Auditor','auditor',1),
 ('user_ferreteria','tenant_ferreteria','propietario@ferreteria.local','Propietario Ferretería','owner',1);
 
 INSERT OR IGNORE INTO products (id,tenant_id,sku,barcode,name,category,price,cost,stock,version,active) VALUES
@@ -72,5 +74,7 @@ INSERT OR IGNORE INTO user_branch_access (id,tenant_id,user_id,branch_id) VALUES
 ('uba_preview','tenant_demo','user_preview','branch_centro'),
 ('uba_admin','tenant_demo','user_admin','branch_centro'),
 ('uba_cajero','tenant_demo','user_cajero','branch_centro'),
+('uba_supervisor','tenant_demo','user_supervisor','branch_centro'),
+('uba_compras','tenant_demo','user_compras','branch_centro'),
 ('uba_bodega','tenant_demo','user_bodega','branch_centro'),
 ('uba_contador','tenant_demo','user_contador','branch_centro');

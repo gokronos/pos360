@@ -1,4 +1,356 @@
-import {randomUUID} from "node:crypto";import {getRuntimeEnv} from "../../../db/runtime-env";import {requireAccess} from "../../../db/authz";const T="tenant_demo",B="branch_centro",W="warehouse_main";
-async function seed(){const d=getRuntimeEnv().DB;await d.prepare("INSERT OR IGNORE INTO warehouses (id,tenant_id,branch_id,name,code,active) VALUES (?,?,?,?,?,1)").bind(W,T,B,"Bodega principal","BOD-01").run();const p=await d.prepare("SELECT id,stock FROM products WHERE tenant_id=?").bind(T).all<{id:string;stock:number}>();await d.batch((p.results||[]).map(x=>d.prepare("INSERT OR IGNORE INTO warehouse_stock (id,tenant_id,warehouse_id,product_id,quantity) VALUES (?,?,?,?,?)").bind(randomUUID(),T,W,x.id,x.stock)));}
-export async function GET(req:Request){const access=await requireAccess(req,"inventory");if(access.error)return access.error;await seed();const d=getRuntimeEnv().DB,[warehouses,stocks,transfers,counts,lots,serials,presentations]=await Promise.all([d.prepare("SELECT w.id,w.name,w.code,w.active,b.name branchName,COALESCE(SUM(s.quantity),0) units,COALESCE(SUM(s.quantity*p.cost),0) value FROM warehouses w JOIN branches b ON b.id=w.branch_id LEFT JOIN warehouse_stock s ON s.warehouse_id=w.id LEFT JOIN products p ON p.id=s.product_id WHERE w.tenant_id=? GROUP BY w.id ORDER BY w.name").bind(T).all(),d.prepare("SELECT s.id,s.warehouse_id warehouseId,w.name warehouseName,p.id productId,p.name,p.sku,p.category,s.quantity,p.cost,p.price FROM warehouse_stock s JOIN warehouses w ON w.id=s.warehouse_id JOIN products p ON p.id=s.product_id WHERE s.tenant_id=? ORDER BY p.name,w.name").bind(T).all(),d.prepare("SELECT t.id,t.number,t.status,t.created_at createdAt,f.name fromName,d.name toName,(SELECT SUM(quantity) FROM stock_transfer_lines WHERE transfer_id=t.id) units FROM stock_transfers t JOIN warehouses f ON f.id=t.from_warehouse_id JOIN warehouses d ON d.id=t.to_warehouse_id WHERE t.tenant_id=? ORDER BY t.created_at DESC LIMIT 30").bind(T).all(),d.prepare("SELECT c.id,c.number,c.status,c.created_at createdAt,w.name warehouseName,COALESCE(SUM(ABS(l.difference)),0) difference FROM stock_counts c JOIN warehouses w ON w.id=c.warehouse_id LEFT JOIN stock_count_lines l ON l.count_id=c.id WHERE c.tenant_id=? GROUP BY c.id ORDER BY c.created_at DESC LIMIT 20").bind(T).all(),d.prepare("SELECT l.id,l.lot_number lotNumber,l.expiration_date expirationDate,l.laboratory,l.health_registration healthRegistration,l.quantity,p.name productName,w.name warehouseName,CAST(julianday(l.expiration_date)-julianday('now') AS INTEGER) daysToExpire FROM product_lots l JOIN products p ON p.id=l.product_id JOIN warehouses w ON w.id=l.warehouse_id WHERE l.tenant_id=? ORDER BY l.expiration_date").bind(T).all(),d.prepare("SELECT s.id,s.serial_number serialNumber,s.warranty_months warrantyMonths,s.status,p.name productName,w.name warehouseName FROM product_serials s JOIN products p ON p.id=s.product_id JOIN warehouses w ON w.id=s.warehouse_id WHERE s.tenant_id=? ORDER BY s.created_at DESC LIMIT 50").bind(T).all(),d.prepare("SELECT x.id,x.name,x.unit,x.conversion_factor conversionFactor,x.barcode,x.sale_price salePrice,x.active,p.name productName FROM product_presentations x JOIN products p ON p.id=x.product_id WHERE x.tenant_id=? ORDER BY p.name,x.name").bind(T).all()]);return Response.json({warehouses:warehouses.results,stocks:stocks.results,transfers:transfers.results,counts:counts.results,lots:lots.results,serials:serials.results,presentations:presentations.results});}
-export async function POST(req:Request){const access=await requireAccess(req,"inventory");if(access.error)return access.error;await seed();const d=getRuntimeEnv().DB,p=await req.json() as {action?:string;name?:string;code?:string;branchId?:string;fromWarehouseId?:string;toWarehouseId?:string;warehouseId?:string;productId?:string;quantity?:number;countedQuantity?:number;transferId?:string;lotNumber?:string;expirationDate?:string;laboratory?:string;healthRegistration?:string;serialNumber?:string;warrantyMonths?:number;unit?:string;conversionFactor?:number;barcode?:string;salePrice?:number;notes?:string};if(p.action==="warehouse"){if(!p.name||!p.code)return Response.json({error:"Nombre y código requeridos"},{status:400});const id=randomUUID();await d.prepare("INSERT INTO warehouses (id,tenant_id,branch_id,name,code) VALUES (?,?,?,?,?)").bind(id,T,p.branchId||B,p.name,p.code).run();return Response.json({id},{status:201});}if(p.action==="transfer"){if(!p.fromWarehouseId||!p.toWarehouseId||!p.productId||Number(p.quantity)<=0||p.fromWarehouseId===p.toWarehouseId)return Response.json({error:"Complete origen, destino, producto y cantidad"},{status:400});const stock=await d.prepare("SELECT quantity FROM warehouse_stock WHERE warehouse_id=? AND product_id=?").bind(p.fromWarehouseId,p.productId).first<{quantity:number}>();if(!stock||stock.quantity<Number(p.quantity))return Response.json({error:"Existencia insuficiente en la bodega origen"},{status:409});const id=randomUUID(),number=`TR-${Date.now().toString().slice(-7)}`;await d.batch([d.prepare("INSERT INTO stock_transfers (id,tenant_id,from_warehouse_id,to_warehouse_id,user_id,number,status,notes) VALUES (?,?,?,?,?,?,'sent',?)").bind(id,T,p.fromWarehouseId,p.toWarehouseId,access.user.id,number,p.notes||null),d.prepare("INSERT INTO stock_transfer_lines (id,transfer_id,product_id,quantity) VALUES (?,?,?,?)").bind(randomUUID(),id,p.productId,Number(p.quantity)),d.prepare("UPDATE warehouse_stock SET quantity=quantity-?,updated_at=CURRENT_TIMESTAMP WHERE warehouse_id=? AND product_id=?").bind(Number(p.quantity),p.fromWarehouseId,p.productId)]);return Response.json({id,number},{status:201});}if(p.action==="receive"){const transfer=await d.prepare("SELECT * FROM stock_transfers WHERE id=? AND tenant_id=? AND status='sent'").bind(p.transferId,T).first<{id:string;to_warehouse_id:string}>();if(!transfer)return Response.json({error:"Traslado no disponible"},{status:404});const lines=await d.prepare("SELECT product_id productId,quantity FROM stock_transfer_lines WHERE transfer_id=?").bind(transfer.id).all<{productId:string;quantity:number}>(),stmts=[d.prepare("UPDATE stock_transfers SET status='received',received_at=CURRENT_TIMESTAMP WHERE id=?").bind(transfer.id)];for(const l of lines.results||[])stmts.push(d.prepare("INSERT INTO warehouse_stock (id,tenant_id,warehouse_id,product_id,quantity) VALUES (?,?,?,?,?) ON CONFLICT(warehouse_id,product_id) DO UPDATE SET quantity=quantity+excluded.quantity,updated_at=CURRENT_TIMESTAMP").bind(randomUUID(),T,transfer.to_warehouse_id,l.productId,l.quantity));await d.batch(stmts);return Response.json({received:true});}if(p.action==="count"){if(!p.warehouseId||!p.productId||p.countedQuantity===undefined)return Response.json({error:"Datos de conteo incompletos"},{status:400});const stock=await d.prepare("SELECT quantity FROM warehouse_stock WHERE warehouse_id=? AND product_id=?").bind(p.warehouseId,p.productId).first<{quantity:number}>(),system=stock?.quantity||0,counted=Number(p.countedQuantity),diff=counted-system,id=randomUUID(),number=`CF-${Date.now().toString().slice(-7)}`;await d.batch([d.prepare("INSERT INTO stock_counts (id,tenant_id,warehouse_id,user_id,number,status,notes,completed_at) VALUES (?,?,?,?,?,'completed',?,CURRENT_TIMESTAMP)").bind(id,T,p.warehouseId,access.user.id,number,p.notes||null),d.prepare("INSERT INTO stock_count_lines (id,count_id,product_id,system_quantity,counted_quantity,difference) VALUES (?,?,?,?,?,?)").bind(randomUUID(),id,p.productId,system,counted,diff),d.prepare("INSERT INTO warehouse_stock (id,tenant_id,warehouse_id,product_id,quantity) VALUES (?,?,?,?,?) ON CONFLICT(warehouse_id,product_id) DO UPDATE SET quantity=excluded.quantity,updated_at=CURRENT_TIMESTAMP").bind(randomUUID(),T,p.warehouseId,p.productId,counted),d.prepare("UPDATE products SET stock=stock+?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(diff,p.productId),d.prepare("INSERT INTO inventory_movements (id,tenant_id,branch_id,product_id,user_id,movement_type,quantity,balance_after,reason,reference) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(randomUUID(),T,B,p.productId,access.user.id,"physical_count",diff,counted,"Conteo físico",number)]);return Response.json({number,difference:diff});}if(p.action==="lot"){if(!p.warehouseId||!p.productId||!p.lotNumber)return Response.json({error:"Bodega, producto y lote requeridos"},{status:400});const id=randomUUID();await d.prepare("INSERT INTO product_lots (id,tenant_id,warehouse_id,product_id,lot_number,expiration_date,laboratory,health_registration,quantity) VALUES (?,?,?,?,?,?,?,?,?)").bind(id,T,p.warehouseId,p.productId,p.lotNumber,p.expirationDate||null,p.laboratory||null,p.healthRegistration||null,Number(p.quantity||0)).run();return Response.json({id},{status:201});}if(p.action==="serial"){if(!p.warehouseId||!p.productId||!p.serialNumber)return Response.json({error:"Bodega, producto y serie requeridos"},{status:400});const id=randomUUID();await d.prepare("INSERT INTO product_serials (id,tenant_id,warehouse_id,product_id,serial_number,warranty_months) VALUES (?,?,?,?,?,?)").bind(id,T,p.warehouseId,p.productId,p.serialNumber,Number(p.warrantyMonths||0)).run();return Response.json({id},{status:201});}if(p.action==="presentation"){if(!p.productId||!p.name||!p.unit)return Response.json({error:"Producto, presentación y unidad requeridos"},{status:400});const id=randomUUID();await d.prepare("INSERT INTO product_presentations (id,tenant_id,product_id,name,unit,conversion_factor,barcode,sale_price) VALUES (?,?,?,?,?,?,?,?)").bind(id,T,p.productId,p.name,p.unit,Number(p.conversionFactor||1),p.barcode||null,Number(p.salePrice||0)).run();return Response.json({id},{status:201});}return Response.json({error:"Acción inválida"},{status:400});}
+import { randomUUID } from "node:crypto";
+import { getRuntimeEnv } from "../../../db/runtime-env";
+import { requireAccess } from "../../../db/authz";
+export async function GET(req: Request) {
+  const access = await requireAccess(req, "inventory");
+  if (access.error) return access.error;
+  const T = access.user.tenantId,
+    d = getRuntimeEnv().DB,
+    [warehouses, stocks, transfers, counts, lots, serials, presentations] =
+      await Promise.all([
+        d
+          .prepare(
+            "SELECT w.id,w.name,w.code,w.active,b.name branchName,COALESCE(SUM(s.quantity),0) units,COALESCE(SUM(s.quantity*p.cost),0) value FROM warehouses w JOIN branches b ON b.id=w.branch_id LEFT JOIN warehouse_stock s ON s.warehouse_id=w.id LEFT JOIN products p ON p.id=s.product_id WHERE w.tenant_id=? GROUP BY w.id ORDER BY w.name",
+          )
+          .bind(T)
+          .all(),
+        d
+          .prepare(
+            "SELECT s.id,s.warehouse_id warehouseId,w.name warehouseName,p.id productId,p.name,p.sku,p.category,s.quantity,p.cost,p.price FROM warehouse_stock s JOIN warehouses w ON w.id=s.warehouse_id JOIN products p ON p.id=s.product_id WHERE s.tenant_id=? ORDER BY p.name,w.name",
+          )
+          .bind(T)
+          .all(),
+        d
+          .prepare(
+            "SELECT t.id,t.number,t.status,t.created_at createdAt,f.name fromName,d.name toName,(SELECT SUM(quantity) FROM stock_transfer_lines WHERE transfer_id=t.id) units FROM stock_transfers t JOIN warehouses f ON f.id=t.from_warehouse_id JOIN warehouses d ON d.id=t.to_warehouse_id WHERE t.tenant_id=? ORDER BY t.created_at DESC LIMIT 30",
+          )
+          .bind(T)
+          .all(),
+        d
+          .prepare(
+            "SELECT c.id,c.number,c.status,c.created_at createdAt,w.name warehouseName,COALESCE(SUM(ABS(l.difference)),0) difference FROM stock_counts c JOIN warehouses w ON w.id=c.warehouse_id LEFT JOIN stock_count_lines l ON l.count_id=c.id WHERE c.tenant_id=? GROUP BY c.id ORDER BY c.created_at DESC LIMIT 20",
+          )
+          .bind(T)
+          .all(),
+        d
+          .prepare(
+            "SELECT l.id,l.lot_number lotNumber,l.expiration_date expirationDate,l.laboratory,l.health_registration healthRegistration,l.quantity,p.name productName,w.name warehouseName,CAST(julianday(l.expiration_date)-julianday('now') AS INTEGER) daysToExpire FROM product_lots l JOIN products p ON p.id=l.product_id JOIN warehouses w ON w.id=l.warehouse_id WHERE l.tenant_id=? ORDER BY l.expiration_date",
+          )
+          .bind(T)
+          .all(),
+        d
+          .prepare(
+            "SELECT s.id,s.serial_number serialNumber,s.warranty_months warrantyMonths,s.status,p.name productName,w.name warehouseName FROM product_serials s JOIN products p ON p.id=s.product_id JOIN warehouses w ON w.id=s.warehouse_id WHERE s.tenant_id=? ORDER BY s.created_at DESC LIMIT 50",
+          )
+          .bind(T)
+          .all(),
+        d
+          .prepare(
+            "SELECT x.id,x.name,x.unit,x.conversion_factor conversionFactor,x.barcode,x.sale_price salePrice,x.active,p.name productName FROM product_presentations x JOIN products p ON p.id=x.product_id WHERE x.tenant_id=? ORDER BY p.name,x.name",
+          )
+          .bind(T)
+          .all(),
+      ]);
+  return Response.json({
+    warehouses: warehouses.results,
+    stocks: stocks.results,
+    transfers: transfers.results,
+    counts: counts.results,
+    lots: lots.results,
+    serials: serials.results,
+    presentations: presentations.results,
+  });
+}
+export async function POST(req: Request) {
+  const access = await requireAccess(req, "inventory", "create");
+  if (access.error) return access.error;
+  const T = access.user.tenantId,
+    B = access.user.branchId,
+    d = getRuntimeEnv().DB,
+    p = (await req.json()) as {
+      action?: string;
+      name?: string;
+      code?: string;
+      branchId?: string;
+      fromWarehouseId?: string;
+      toWarehouseId?: string;
+      warehouseId?: string;
+      productId?: string;
+      quantity?: number;
+      countedQuantity?: number;
+      transferId?: string;
+      lotNumber?: string;
+      expirationDate?: string;
+      laboratory?: string;
+      healthRegistration?: string;
+      serialNumber?: string;
+      warrantyMonths?: number;
+      unit?: string;
+      conversionFactor?: number;
+      barcode?: string;
+      salePrice?: number;
+      notes?: string;
+    };
+  const belongsToTenant = async (
+    table: "branches" | "warehouses" | "products" | "stock_transfers",
+    id?: string,
+  ) =>
+    !id ||
+    Boolean(
+      await d
+        .prepare(`SELECT id FROM ${table} WHERE id=? AND tenant_id=?`)
+        .bind(id, T)
+        .first(),
+    );
+  const references = await Promise.all([
+    belongsToTenant("branches", p.branchId),
+    belongsToTenant("warehouses", p.fromWarehouseId),
+    belongsToTenant("warehouses", p.toWarehouseId),
+    belongsToTenant("warehouses", p.warehouseId),
+    belongsToTenant("products", p.productId),
+    belongsToTenant("stock_transfers", p.transferId),
+  ]);
+  if (references.some((valid) => !valid))
+    return Response.json(
+      { error: "El recurso solicitado no pertenece a la empresa activa" },
+      { status: 403 },
+    );
+  if (p.action === "warehouse") {
+    if (!p.name || !p.code)
+      return Response.json(
+        { error: "Nombre y código requeridos" },
+        { status: 400 },
+      );
+    const id = randomUUID();
+    await d
+      .prepare(
+        "INSERT INTO warehouses (id,tenant_id,branch_id,name,code) VALUES (?,?,?,?,?)",
+      )
+      .bind(id, T, p.branchId || B, p.name, p.code)
+      .run();
+    return Response.json({ id }, { status: 201 });
+  }
+  if (p.action === "transfer") {
+    if (
+      !p.fromWarehouseId ||
+      !p.toWarehouseId ||
+      !p.productId ||
+      Number(p.quantity) <= 0 ||
+      p.fromWarehouseId === p.toWarehouseId
+    )
+      return Response.json(
+        { error: "Complete origen, destino, producto y cantidad" },
+        { status: 400 },
+      );
+    const stock = await d
+      .prepare(
+        "SELECT quantity FROM warehouse_stock WHERE warehouse_id=? AND product_id=?",
+      )
+      .bind(p.fromWarehouseId, p.productId)
+      .first<{ quantity: number }>();
+    if (!stock || stock.quantity < Number(p.quantity))
+      return Response.json(
+        { error: "Existencia insuficiente en la bodega origen" },
+        { status: 409 },
+      );
+    const id = randomUUID(),
+      number = `TR-${Date.now().toString().slice(-7)}`;
+    await d.batch([
+      d
+        .prepare(
+          "INSERT INTO stock_transfers (id,tenant_id,from_warehouse_id,to_warehouse_id,user_id,number,status,notes) VALUES (?,?,?,?,?,?,'sent',?)",
+        )
+        .bind(
+          id,
+          T,
+          p.fromWarehouseId,
+          p.toWarehouseId,
+          access.user.id,
+          number,
+          p.notes || null,
+        ),
+      d
+        .prepare(
+          "INSERT INTO stock_transfer_lines (id,transfer_id,product_id,quantity) VALUES (?,?,?,?)",
+        )
+        .bind(randomUUID(), id, p.productId, Number(p.quantity)),
+      d
+        .prepare(
+          "UPDATE warehouse_stock SET quantity=quantity-?,updated_at=CURRENT_TIMESTAMP WHERE warehouse_id=? AND product_id=?",
+        )
+        .bind(Number(p.quantity), p.fromWarehouseId, p.productId),
+    ]);
+    return Response.json({ id, number }, { status: 201 });
+  }
+  if (p.action === "receive") {
+    const transfer = await d
+      .prepare(
+        "SELECT * FROM stock_transfers WHERE id=? AND tenant_id=? AND status='sent'",
+      )
+      .bind(p.transferId, T)
+      .first<{ id: string; to_warehouse_id: string }>();
+    if (!transfer)
+      return Response.json(
+        { error: "Traslado no disponible" },
+        { status: 404 },
+      );
+    const lines = await d
+        .prepare(
+          "SELECT product_id productId,quantity FROM stock_transfer_lines WHERE transfer_id=?",
+        )
+        .bind(transfer.id)
+        .all<{ productId: string; quantity: number }>(),
+      stmts = [
+        d
+          .prepare(
+            "UPDATE stock_transfers SET status='received',received_at=CURRENT_TIMESTAMP WHERE id=?",
+          )
+          .bind(transfer.id),
+      ];
+    for (const l of lines.results || [])
+      stmts.push(
+        d
+          .prepare(
+            "INSERT INTO warehouse_stock (id,tenant_id,warehouse_id,product_id,quantity) VALUES (?,?,?,?,?) ON CONFLICT(warehouse_id,product_id) DO UPDATE SET quantity=quantity+excluded.quantity,updated_at=CURRENT_TIMESTAMP",
+          )
+          .bind(
+            randomUUID(),
+            T,
+            transfer.to_warehouse_id,
+            l.productId,
+            l.quantity,
+          ),
+      );
+    await d.batch(stmts);
+    return Response.json({ received: true });
+  }
+  if (p.action === "count") {
+    if (!p.warehouseId || !p.productId || p.countedQuantity === undefined)
+      return Response.json(
+        { error: "Datos de conteo incompletos" },
+        { status: 400 },
+      );
+    const stock = await d
+        .prepare(
+          "SELECT quantity FROM warehouse_stock WHERE warehouse_id=? AND product_id=?",
+        )
+        .bind(p.warehouseId, p.productId)
+        .first<{ quantity: number }>(),
+      system = stock?.quantity || 0,
+      counted = Number(p.countedQuantity),
+      diff = counted - system,
+      id = randomUUID(),
+      number = `CF-${Date.now().toString().slice(-7)}`;
+    await d.batch([
+      d
+        .prepare(
+          "INSERT INTO stock_counts (id,tenant_id,warehouse_id,user_id,number,status,notes,completed_at) VALUES (?,?,?,?,?,'completed',?,CURRENT_TIMESTAMP)",
+        )
+        .bind(id, T, p.warehouseId, access.user.id, number, p.notes || null),
+      d
+        .prepare(
+          "INSERT INTO stock_count_lines (id,count_id,product_id,system_quantity,counted_quantity,difference) VALUES (?,?,?,?,?,?)",
+        )
+        .bind(randomUUID(), id, p.productId, system, counted, diff),
+      d
+        .prepare(
+          "INSERT INTO warehouse_stock (id,tenant_id,warehouse_id,product_id,quantity) VALUES (?,?,?,?,?) ON CONFLICT(warehouse_id,product_id) DO UPDATE SET quantity=excluded.quantity,updated_at=CURRENT_TIMESTAMP",
+        )
+        .bind(randomUUID(), T, p.warehouseId, p.productId, counted),
+      d
+        .prepare(
+          "UPDATE products SET stock=stock+?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        )
+        .bind(diff, p.productId),
+      d
+        .prepare(
+          "INSERT INTO inventory_movements (id,tenant_id,branch_id,product_id,user_id,movement_type,quantity,balance_after,reason,reference) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        )
+        .bind(
+          randomUUID(),
+          T,
+          B,
+          p.productId,
+          access.user.id,
+          "physical_count",
+          diff,
+          counted,
+          "Conteo físico",
+          number,
+        ),
+    ]);
+    return Response.json({ number, difference: diff });
+  }
+  if (p.action === "lot") {
+    if (!p.warehouseId || !p.productId || !p.lotNumber)
+      return Response.json(
+        { error: "Bodega, producto y lote requeridos" },
+        { status: 400 },
+      );
+    const id = randomUUID();
+    await d
+      .prepare(
+        "INSERT INTO product_lots (id,tenant_id,warehouse_id,product_id,lot_number,expiration_date,laboratory,health_registration,quantity) VALUES (?,?,?,?,?,?,?,?,?)",
+      )
+      .bind(
+        id,
+        T,
+        p.warehouseId,
+        p.productId,
+        p.lotNumber,
+        p.expirationDate || null,
+        p.laboratory || null,
+        p.healthRegistration || null,
+        Number(p.quantity || 0),
+      )
+      .run();
+    return Response.json({ id }, { status: 201 });
+  }
+  if (p.action === "serial") {
+    if (!p.warehouseId || !p.productId || !p.serialNumber)
+      return Response.json(
+        { error: "Bodega, producto y serie requeridos" },
+        { status: 400 },
+      );
+    const id = randomUUID();
+    await d
+      .prepare(
+        "INSERT INTO product_serials (id,tenant_id,warehouse_id,product_id,serial_number,warranty_months) VALUES (?,?,?,?,?,?)",
+      )
+      .bind(
+        id,
+        T,
+        p.warehouseId,
+        p.productId,
+        p.serialNumber,
+        Number(p.warrantyMonths || 0),
+      )
+      .run();
+    return Response.json({ id }, { status: 201 });
+  }
+  if (p.action === "presentation") {
+    if (!p.productId || !p.name || !p.unit)
+      return Response.json(
+        { error: "Producto, presentación y unidad requeridos" },
+        { status: 400 },
+      );
+    const id = randomUUID();
+    await d
+      .prepare(
+        "INSERT INTO product_presentations (id,tenant_id,product_id,name,unit,conversion_factor,barcode,sale_price) VALUES (?,?,?,?,?,?,?,?)",
+      )
+      .bind(
+        id,
+        T,
+        p.productId,
+        p.name,
+        p.unit,
+        Number(p.conversionFactor || 1),
+        p.barcode || null,
+        Number(p.salePrice || 0),
+      )
+      .run();
+    return Response.json({ id }, { status: 201 });
+  }
+  return Response.json({ error: "Acción inválida" }, { status: 400 });
+}
