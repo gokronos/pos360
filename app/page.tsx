@@ -13,6 +13,7 @@ import POS from "./pos-advanced";
 import Inventory from "./inventory-advanced";
 import { readJson } from "./api-client";
 import BusinessSetupWizard from "./business-setup-wizard";
+import ReportsReal, { DashboardReal } from "./reports-real";
 type View =
   | "dashboard"
   | "pos"
@@ -207,7 +208,7 @@ export default function Home() {
           </div>
         </header>
         <div className="content">
-          {view === "dashboard" && <Dashboard go={setView} />}{" "}
+          {view === "dashboard" && <DashboardReal go={(target) => setView(target)} />}{" "}
           {view === "pos" && can("pos") && (
             <POS
               cart={cart}
@@ -228,7 +229,7 @@ export default function Home() {
           {view === "clientes" && can("customers") && (
             <Customers notify={notify} />
           )}{" "}
-          {view === "reportes" && can("reports") && <Reports />}{" "}
+          {view === "reportes" && can("reports") && <ReportsReal />}{" "}
           {view === "configuracion" && can("settings") && (
             <Settings notify={notify} />
           )}{" "}
@@ -239,7 +240,7 @@ export default function Home() {
     </main>
   );
 }
-function Dashboard({ go }: { go: (v: View) => void }) {
+function DashboardLegacy({ go }: { go: (v: View) => void }) {
   return (
     <>
       <div className="welcome">
@@ -1286,7 +1287,7 @@ function Generic({
     </>
   );
 }
-function Reports() {
+function ReportsLegacy() {
   return (
     <>
       <div className="page-intro">
