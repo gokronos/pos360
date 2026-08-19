@@ -1,356 +1,69 @@
 import { randomUUID } from "node:crypto";
-import { getRuntimeEnv } from "../../../db/runtime-env";
 import { requireAccess } from "../../../db/authz";
 import { inventoryMovement, resolveWarehouse } from "../../../db/inventory";
-import { parseMoney } from "../../../db/money";
-export async function GET(req: Request) {
-  const access = await requireAccess(req, "purchases");
-  if (access.error) return access.error;
-  const T = access.user.tenantId,
-    d = getRuntimeEnv().DB,
-    orders = await d
-      .prepare(
-        "SELECT o.id,o.number,o.status,o.total,o.created_at createdAt,s.name supplierName,s.id supplierId,COALESCE((SELECT balance FROM payables WHERE order_id=o.id),0) balance,COALESCE((SELECT due_date FROM payables WHERE order_id=o.id),'') dueDate,(SELECT COUNT(*) FROM purchase_receipts WHERE order_id=o.id) receiptCount FROM purchase_orders o JOIN suppliers s ON s.id=o.supplier_id WHERE o.tenant_id=? ORDER BY o.created_at DESC LIMIT 100",
-      )
-      .bind(T)
-      .all();
-  return Response.json({ orders: orders.results });
+import { getRuntimeEnv } from "../../../db/runtime-env";
+import { moneyToMajor, multiplyMoney, parseMoney } from "../../../db/money";
+
+const event=(d:ReturnType<typeof getRuntimeEnv>["DB"],x:{tenantId:string;orderId:string;userId:string;action:string;from:string|null;to:string;reason:string;reference?:string})=>d.prepare("INSERT INTO purchase_events (id,tenant_id,order_id,user_id,action,from_status,to_status,reason,reference) VALUES (?,?,?,?,?,?,?,?,?)").bind(randomUUID(),x.tenantId,x.orderId,x.userId,x.action,x.from,x.to,x.reason,x.reference||null);
+
+export async function GET(req:Request){
+  const access=await requireAccess(req,"purchases");if(access.error)return access.error;
+  const d=getRuntimeEnv().DB,T=access.user.tenantId,url=new URL(req.url),orderId=url.searchParams.get("orderId");
+  if(orderId){
+    const order=await d.prepare("SELECT o.id,o.number,o.status,o.total_minor totalMinor,o.notes,o.created_at createdAt,o.approved_at approvedAt,s.name supplierName,w.name warehouseName,creator.display_name createdBy,approver.display_name approvedBy FROM purchase_orders o JOIN suppliers s ON s.id=o.supplier_id LEFT JOIN warehouses w ON w.id=o.warehouse_id JOIN app_users creator ON creator.id=o.user_id LEFT JOIN app_users approver ON approver.id=o.approved_by WHERE o.id=? AND o.tenant_id=? AND o.branch_id=?").bind(orderId,T,access.user.branchId).first();
+    if(!order)return Response.json({error:"Orden no encontrada"},{status:404});
+    const [lines,receipts,payments,events]=await Promise.all([
+      d.prepare("SELECT l.id,l.product_id productId,p.name productName,p.sku,l.quantity,l.received_quantity receivedQuantity,l.returned_quantity returnedQuantity,l.unit_cost_minor unitCostMinor,l.line_total_minor lineTotalMinor FROM purchase_order_lines l JOIN products p ON p.id=l.product_id WHERE l.order_id=? ORDER BY p.name").bind(orderId).all(),
+      d.prepare("SELECT r.id,r.reference,r.total_minor totalMinor,r.created_at createdAt,u.display_name receivedBy,w.name warehouseName FROM purchase_receipts r JOIN app_users u ON u.id=r.user_id LEFT JOIN warehouses w ON w.id=r.warehouse_id WHERE r.order_id=? ORDER BY r.created_at DESC").bind(orderId).all(),
+      d.prepare("SELECT sp.id,sp.amount_minor amountMinor,sp.method,sp.reference,sp.created_at createdAt,u.display_name paidBy FROM supplier_payments sp JOIN payables p ON p.id=sp.payable_id JOIN app_users u ON u.id=sp.user_id WHERE p.order_id=? ORDER BY sp.created_at DESC").bind(orderId).all(),
+      d.prepare("SELECT e.id,e.action,e.from_status fromStatus,e.to_status toStatus,e.reason,e.reference,e.created_at createdAt,u.display_name userName FROM purchase_events e JOIN app_users u ON u.id=e.user_id WHERE e.order_id=? ORDER BY e.created_at,e.rowid").bind(orderId).all(),
+    ]);return Response.json({order,lines:lines.results,receipts:receipts.results,payments:payments.results,events:events.results});
+  }
+  const orders=await d.prepare("SELECT o.id,o.number,o.status,o.total_minor/100.0 total,o.total_minor totalMinor,o.created_at createdAt,o.approved_at approvedAt,s.name supplierName,s.id supplierId,COALESCE(p.balance_minor,0)/100.0 balance,COALESCE(p.balance_minor,0) balanceMinor,COALESCE(p.due_date,'') dueDate,(SELECT COUNT(*) FROM purchase_receipts r WHERE r.order_id=o.id) receiptCount,(SELECT COALESCE(SUM(received_quantity),0) FROM purchase_order_lines l WHERE l.order_id=o.id) receivedUnits,(SELECT COALESCE(SUM(quantity),0) FROM purchase_order_lines l WHERE l.order_id=o.id) orderedUnits FROM purchase_orders o JOIN suppliers s ON s.id=o.supplier_id LEFT JOIN payables p ON p.order_id=o.id WHERE o.tenant_id=? AND o.branch_id=? ORDER BY o.created_at DESC LIMIT 100").bind(T,access.user.branchId).all();
+  return Response.json({orders:orders.results});
 }
-export async function POST(req: Request) {
-  const access = await requireAccess(req, "purchases", "create");
-  if (access.error) return access.error;
-  const p = (await req.json()) as {
-    supplierId?: string;
-    notes?: string;
-    lines?: { productId: string; quantity: number; unitCost: number }[];
-  };
-  if (!p.supplierId || !p.lines?.length)
-    return Response.json(
-      { error: "Seleccione proveedor y productos" },
-      { status: 400 },
-    );
-  if (p.lines.some((l) => Number(l.quantity) <= 0 || Number(l.unitCost) < 0))
-    return Response.json(
-      { error: "Revise cantidades y costos" },
-      { status: 400 },
-    );
-  const T = access.user.tenantId,
-    B = access.user.branchId,
-    d = getRuntimeEnv().DB;
-  const supplier = await d
-    .prepare("SELECT id FROM suppliers WHERE id=? AND tenant_id=?")
-    .bind(p.supplierId, T)
-    .first();
-  const products = await Promise.all(
-    p.lines.map((line) =>
-      d
-        .prepare("SELECT id FROM products WHERE id=? AND tenant_id=?")
-        .bind(line.productId, T)
-        .first(),
-    ),
-  );
-  if (!supplier || products.some((product) => !product))
-    return Response.json(
-      { error: "Proveedor o producto ajeno a la empresa activa" },
-      { status: 403 },
-    );
-  const id = randomUUID(),
-    number = `OC-${Date.now().toString().slice(-7)}`,
-    total = p.lines.reduce(
-      (s, l) => s + Number(l.quantity) * Number(l.unitCost),
-      0,
-    );
-  await d.batch([
-    d
-      .prepare(
-        "INSERT INTO purchase_orders (id,tenant_id,branch_id,supplier_id,user_id,number,status,total,notes) VALUES (?,?,?,?,?,?,'ordered',?,?)",
-      )
-      .bind(
-        id,
-        T,
-        B,
-        p.supplierId,
-        access.user.id,
-        number,
-        total,
-        p.notes || null,
-      ),
-    ...p.lines.map((l) =>
-      d
-        .prepare(
-          "INSERT INTO purchase_order_lines (id,order_id,product_id,quantity,received_quantity,unit_cost,line_total) VALUES (?,?,?,?,0,?,?)",
-        )
-        .bind(
-          randomUUID(),
-          id,
-          l.productId,
-          Number(l.quantity),
-          Number(l.unitCost),
-          Number(l.quantity) * Number(l.unitCost),
-        ),
-    ),
-  ]);
-  return Response.json(
-    { order: { id, number, total, status: "ordered" } },
-    { status: 201 },
-  );
+
+export async function POST(req:Request){
+  const access=await requireAccess(req,"purchases","create");if(access.error)return access.error;
+  const p=(await req.json()) as {supplierId?:string;warehouseId?:string;notes?:string;lines?:{productId:string;quantity:number;unitCost:number|string}[]},T=access.user.tenantId,B=access.user.branchId,d=getRuntimeEnv().DB;
+  if(!p.supplierId||!p.lines?.length)return Response.json({error:"Seleccione proveedor y productos"},{status:400});
+  if(new Set(p.lines.map(x=>x.productId)).size!==p.lines.length)return Response.json({error:"Consolide las líneas repetidas del mismo producto"},{status:400});
+  const supplier=await d.prepare("SELECT id FROM suppliers WHERE id=? AND tenant_id=? AND active=1").bind(p.supplierId,T).first();if(!supplier)return Response.json({error:"Proveedor inválido o inactivo"},{status:403});
+  const warehouse=p.warehouseId?await d.prepare("SELECT w.id,w.branch_id branchId FROM warehouses w WHERE w.id=? AND w.tenant_id=? AND w.active=1 AND EXISTS(SELECT 1 FROM user_branch_access a WHERE a.tenant_id=w.tenant_id AND a.branch_id=w.branch_id AND a.user_id=?)").bind(p.warehouseId,T,access.user.id).first<{id:string;branchId:string}>():await resolveWarehouse(T,B);if(!warehouse)return Response.json({error:"Bodega inválida o fuera de las sedes autorizadas"},{status:403});
+  const lines=[];let totalMinor=0;
+  for(const line of p.lines){const product=await d.prepare("SELECT id,track_inventory trackInventory FROM products WHERE id=? AND tenant_id=? AND active=1").bind(line.productId,T).first<{id:string;trackInventory:number}>();if(!product||!product.trackInventory)return Response.json({error:"Solo puede comprar productos inventariables activos"},{status:400});const quantity=Number(line.quantity);let unitCostMinor:number;try{unitCostMinor=parseMoney(line.unitCost)}catch(error){return Response.json({error:error instanceof Error?error.message:"Costo inválido"},{status:400})}if(!Number.isFinite(quantity)||quantity<=0||unitCostMinor<0)return Response.json({error:"Cantidad o costo inválido"},{status:400});const lineTotalMinor=multiplyMoney(unitCostMinor,quantity);totalMinor+=lineTotalMinor;lines.push({...line,quantity,unitCostMinor,lineTotalMinor})}
+  const id=randomUUID(),number=`OC-${Date.now().toString().slice(-7)}`,statements=[d.prepare("INSERT INTO purchase_orders (id,tenant_id,branch_id,warehouse_id,supplier_id,user_id,number,status,total,total_minor,notes) VALUES (?,?,?,?,?,?,?,'draft',?,?,?)").bind(id,T,warehouse.branchId,p.warehouseId||warehouse.id,p.supplierId,access.user.id,number,moneyToMajor(totalMinor),totalMinor,p.notes?.trim()||null),...lines.map(l=>d.prepare("INSERT INTO purchase_order_lines (id,order_id,product_id,quantity,received_quantity,unit_cost,line_total,unit_cost_minor,line_total_minor) VALUES (?,?,?,?,0,?,?,?,?)").bind(randomUUID(),id,l.productId,l.quantity,moneyToMajor(l.unitCostMinor),moneyToMajor(l.lineTotalMinor),l.unitCostMinor,l.lineTotalMinor)),event(d,{tenantId:T,orderId:id,userId:access.user.id,action:"create",from:null,to:"draft",reason:"Orden de compra creada"})];
+  await d.batch(statements);return Response.json({order:{id,number,total:moneyToMajor(totalMinor),totalMinor,status:"draft"}},{status:201});
 }
-export async function PATCH(req: Request) {
-  const access = await requireAccess(req, "purchases", "edit");
-  if (access.error) return access.error;
-  const p = (await req.json()) as {
-    action?: "receive" | "pay" | "return";
-    orderId?: string;
-    amount?: number;
-    method?: string;
-    percent?: number;
-    quantity?: number;
-    productId?: string;
-    reason?: string;
-  };
-  if (!p.orderId)
-    return Response.json({ error: "Orden requerida" }, { status: 400 });
-  const T = access.user.tenantId,
-    d = getRuntimeEnv().DB,
-    order = await d
-      .prepare(
-        "SELECT o.*,s.payment_days paymentDays FROM purchase_orders o JOIN suppliers s ON s.id=o.supplier_id WHERE o.id=? AND o.tenant_id=?",
-      )
-      .bind(p.orderId, T)
-      .first<{
-        id: string;
-        supplier_id: string;
-        total: number;
-        status: string;
-        paymentDays: number;
-      }>();
-  if (!order)
-    return Response.json({ error: "Orden no encontrada" }, { status: 404 });
-  if (p.action === "receive") {
-    if (order.status === "received")
-      return Response.json(
-        { error: "La orden ya fue recibida" },
-        { status: 409 },
-      );
-    const percent = Math.min(100, Math.max(1, Number(p.percent || 100))) / 100, warehouse=await resolveWarehouse(T,B);
-    const lines = await d
-        .prepare(
-          "SELECT l.* FROM purchase_order_lines l WHERE l.order_id=?",
-        )
-        .bind(order.id)
-        .all<{
-          id: string;
-          product_id: string;
-          quantity: number;
-          received_quantity: number;
-          unit_cost: number;
-        }>(),
-      pending = (lines.results || []).filter(
-        (l) => l.quantity > l.received_quantity,
-      );
-    if (!pending.length)
-      return Response.json(
-        { error: "No hay mercancía pendiente" },
-        { status: 409 },
-      );
-    const receipt = randomUUID(),
-      ref = `REC-${Date.now()}`;
-    let receiptTotal = 0,
-      complete = true;
-    const stmts = [];
-    for (const l of pending) {
-      const remaining = l.quantity - l.received_quantity,
-        qty =
-          percent >= 1
-            ? remaining
-            : Math.min(
-                remaining,
-                Math.max(0.01, Math.round(remaining * percent * 100) / 100),
-              ),
-        newReceived = l.received_quantity + qty;
-      receiptTotal += qty * l.unit_cost;
-      if (newReceived < l.quantity) complete = false;
-      stmts.push(
-        d
-          .prepare(
-            "UPDATE purchase_order_lines SET received_quantity=? WHERE id=?",
-          )
-          .bind(newReceived, l.id),
-        d
-          .prepare(
-            "INSERT INTO purchase_receipt_lines (id,receipt_id,order_line_id,product_id,quantity,unit_cost,line_total) VALUES (?,?,?,?,?,?,?)",
-          )
-          .bind(
-            randomUUID(),
-            receipt,
-            l.id,
-            l.product_id,
-            qty,
-            l.unit_cost,
-            qty * l.unit_cost,
-          ),
-      );
-      const movement=await inventoryMovement({tenantId:T,branchId:B,warehouseId:warehouse.id,productId:l.product_id,userId:access.user.id,movementType:"purchase",quantity:qty,reason:"Recepción de compra",reference:ref,sourceType:"purchase_receipt",sourceId:receipt,unitCostMinor:parseMoney(l.unit_cost)});stmts.push(...movement.statements,d.prepare("UPDATE products SET cost=?,cost_minor=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(movement.averageCostMinor/100,movement.averageCostMinor,l.product_id));
-    }
-    stmts.unshift(
-      d
-        .prepare(
-          "INSERT INTO purchase_receipts (id,tenant_id,order_id,user_id,reference,total) VALUES (?,?,?,?,?,?)",
-        )
-        .bind(receipt, T, order.id, access.user.id, ref, receiptTotal),
-    );
-    stmts.push(
-      d
-        .prepare("UPDATE purchase_orders SET status=? WHERE id=?")
-        .bind(complete ? "received" : "partial", order.id),
-    );
-    const payable = await d
-        .prepare("SELECT id FROM payables WHERE order_id=?")
-        .bind(order.id)
-        .first<{ id: string }>(),
-      due = new Date(
-        Date.now() + Math.max(0, order.paymentDays || 0) * 86400000,
-      )
-        .toISOString()
-        .slice(0, 10);
-    if (payable)
-      stmts.push(
-        d
-          .prepare(
-            "UPDATE payables SET original_amount=original_amount+?,balance=balance+?,status='pending' WHERE id=?",
-          )
-          .bind(receiptTotal, receiptTotal, payable.id),
-      );
-    else
-      stmts.push(
-        d
-          .prepare(
-            "INSERT INTO payables (id,tenant_id,supplier_id,order_id,original_amount,balance,due_date,status) VALUES (?,?,?,?,?,?,?,'pending')",
-          )
-          .bind(
-            randomUUID(),
-            T,
-            order.supplier_id,
-            order.id,
-            receiptTotal,
-            receiptTotal,
-            due,
-          ),
-      );
-    await d.batch(stmts);
-    return Response.json({
-      received: true,
-      reference: ref,
-      total: receiptTotal,
-      status: complete ? "received" : "partial",
-    });
+
+type Action={action?:"approve"|"receive"|"pay"|"return";orderId?:string;amount?:number|string;method?:string;paymentReference?:string;percent?:number;lines?:{lineId:string;quantity:number}[];quantity?:number;productId?:string;reason?:string};
+export async function PATCH(req:Request){
+  const access=await requireAccess(req,"purchases","edit");if(access.error)return access.error;
+  const p=(await req.json()) as Action;if(!p.orderId)return Response.json({error:"Orden requerida"},{status:400});
+  const T=access.user.tenantId,B=access.user.branchId,d=getRuntimeEnv().DB,order=await d.prepare("SELECT o.id,o.supplier_id supplierId,o.warehouse_id warehouseId,o.branch_id branchId,o.status,o.number,s.payment_days paymentDays FROM purchase_orders o JOIN suppliers s ON s.id=o.supplier_id WHERE o.id=? AND o.tenant_id=? AND o.branch_id=?").bind(p.orderId,T,B).first<{id:string;supplierId:string;warehouseId:string|null;branchId:string;status:string;number:string;paymentDays:number}>();if(!order)return Response.json({error:"Orden no encontrada en la sede activa"},{status:404});
+  if(p.action==="approve"){
+    if(!["owner","admin","supervisor"].includes(access.user.role))return Response.json({error:"La autorización requiere propietario, administrador o supervisor"},{status:403});if(order.status!=="draft")return Response.json({error:"Solo se autorizan órdenes en borrador"},{status:409});
+    await d.batch([d.prepare("UPDATE purchase_orders SET status='approved',approved_by=?,approved_at=CURRENT_TIMESTAMP WHERE id=? AND status='draft'").bind(access.user.id,order.id),event(d,{tenantId:T,orderId:order.id,userId:access.user.id,action:"approve",from:"draft",to:"approved",reason:p.reason?.trim()||"Orden autorizada"})]);return Response.json({approved:true,status:"approved"});
   }
-  if (p.action === "pay") {
-    const payable = await d
-      .prepare(
-        "SELECT id,supplier_id,balance FROM payables WHERE order_id=? AND balance>0",
-      )
-      .bind(order.id)
-      .first<{ id: string; supplier_id: string; balance: number }>();
-    if (!payable)
-      return Response.json(
-        { error: "La orden no tiene saldo pendiente" },
-        { status: 409 },
-      );
-    const amount = Math.min(Number(p.amount || 0), payable.balance),
-      remaining = payable.balance - amount;
-    if (amount <= 0)
-      return Response.json(
-        { error: "Ingrese un valor válido" },
-        { status: 400 },
-      );
-    await d.batch([
-      d
-        .prepare(
-          "INSERT INTO supplier_payments (id,tenant_id,supplier_id,payable_id,user_id,amount,method,reference) VALUES (?,?,?,?,?,?,?,?)",
-        )
-        .bind(
-          randomUUID(),
-          T,
-          payable.supplier_id,
-          payable.id,
-          access.user.id,
-          amount,
-          p.method || "transfer",
-          `PAG-${Date.now()}`,
-        ),
-      d
-        .prepare("UPDATE payables SET balance=?,status=? WHERE id=?")
-        .bind(remaining, remaining <= 0 ? "paid" : "partial", payable.id),
-    ]);
-    return Response.json({ paid: amount, remaining });
+  if(p.action==="receive"){
+    if(!["approved","partial"].includes(order.status))return Response.json({error:"La orden debe estar autorizada y tener mercancía pendiente"},{status:409});const warehouse=order.warehouseId?await d.prepare("SELECT id,branch_id branchId FROM warehouses WHERE id=? AND tenant_id=? AND active=1").bind(order.warehouseId,T).first<{id:string;branchId:string}>():await resolveWarehouse(T,order.branchId);if(!warehouse)return Response.json({error:"La bodega de recepción no está activa"},{status:409});
+    const all=await d.prepare("SELECT id,product_id productId,quantity,received_quantity receivedQuantity,unit_cost_minor unitCostMinor FROM purchase_order_lines WHERE order_id=? ORDER BY id").bind(order.id).all<{id:string;productId:string;quantity:number;receivedQuantity:number;unitCostMinor:number}>(),requested=new Map((p.lines||[]).map(x=>[x.lineId,Number(x.quantity)])),percent=Math.min(100,Math.max(1,Number(p.percent||100)))/100,selected=[];
+    for(const line of all.results){const remaining=line.quantity-line.receivedQuantity;if(remaining<=0)continue;const qty=p.lines?requested.get(line.id):percent>=1?remaining:Math.min(remaining,Math.max(0.01,Math.round(remaining*percent*100)/100));if(qty===undefined)continue;if(!Number.isFinite(qty)||qty<=0||qty>remaining)return Response.json({error:"Una cantidad recibida supera lo pendiente"},{status:400});selected.push({...line,qty})}if(!selected.length)return Response.json({error:"No hay cantidades válidas para recibir"},{status:400});
+    const receiptId=randomUUID(),reference=`REC-${Date.now()}`,statements=[],receiptTotalMinor=selected.reduce((sum,l)=>sum+multiplyMoney(l.unitCostMinor,l.qty),0);
+    statements.push(d.prepare("INSERT INTO purchase_receipts (id,tenant_id,order_id,warehouse_id,user_id,reference,total,total_minor) VALUES (?,?,?,?,?,?,?,?)").bind(receiptId,T,order.id,warehouse.id,access.user.id,reference,moneyToMajor(receiptTotalMinor),receiptTotalMinor));
+    for(const line of selected){const lineTotal=multiplyMoney(line.unitCostMinor,line.qty),movement=await inventoryMovement({tenantId:T,branchId:warehouse.branchId,warehouseId:warehouse.id,productId:line.productId,userId:access.user.id,movementType:"purchase",quantity:line.qty,reason:`Recepción ${order.number}`,reference,sourceType:"purchase_receipt",sourceId:receiptId,unitCostMinor:line.unitCostMinor});statements.push(d.prepare("UPDATE purchase_order_lines SET received_quantity=received_quantity+? WHERE id=?").bind(line.qty,line.id),d.prepare("INSERT INTO purchase_receipt_lines (id,receipt_id,order_line_id,product_id,quantity,unit_cost,line_total) VALUES (?,?,?,?,?,?,?)").bind(randomUUID(),receiptId,line.id,line.productId,line.qty,moneyToMajor(line.unitCostMinor),moneyToMajor(lineTotal)),...movement.statements,d.prepare("UPDATE products SET cost=?,cost_minor=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND tenant_id=?").bind(moneyToMajor(movement.averageCostMinor),movement.averageCostMinor,line.productId,T))}
+    const pendingAfter=all.results.some(l=>l.receivedQuantity+Number(selected.find(x=>x.id===l.id)?.qty||0)<l.quantity),nextStatus=pendingAfter?"partial":"received",due=new Date(Date.now()+Math.max(0,order.paymentDays)*86400000).toISOString().slice(0,10);
+    statements.push(d.prepare("UPDATE purchase_orders SET status=? WHERE id=?").bind(nextStatus,order.id),d.prepare("INSERT INTO payables (id,tenant_id,supplier_id,order_id,original_amount,balance,original_amount_minor,balance_minor,due_date,status) VALUES (?,?,?,?,?,?,?,?,?,'pending') ON CONFLICT(order_id) DO UPDATE SET original_amount=original_amount+excluded.original_amount,balance=balance+excluded.balance,original_amount_minor=original_amount_minor+excluded.original_amount_minor,balance_minor=balance_minor+excluded.balance_minor,status='pending'").bind(randomUUID(),T,order.supplierId,order.id,moneyToMajor(receiptTotalMinor),moneyToMajor(receiptTotalMinor),receiptTotalMinor,receiptTotalMinor,due),event(d,{tenantId:T,orderId:order.id,userId:access.user.id,action:"receive",from:order.status,to:nextStatus,reason:p.reason?.trim()||"Recepción transaccional de mercancía",reference}));
+    await d.batch(statements);return Response.json({received:true,reference,total:moneyToMajor(receiptTotalMinor),totalMinor:receiptTotalMinor,status:nextStatus});
   }
-  if (p.action === "return") {
-    if (!p.productId || Number(p.quantity) <= 0)
-      return Response.json(
-        { error: "Seleccione producto y cantidad" },
-        { status: 400 },
-      );
-    const warehouse=await resolveWarehouse(T,B),line = await d
-      .prepare(
-        "SELECT l.product_id,l.unit_cost,COALESCE((SELECT quantity FROM inventory_balances b WHERE b.warehouse_id=? AND b.product_id=l.product_id AND b.variant_id IS NULL),0) stock FROM purchase_order_lines l WHERE l.order_id=? AND l.product_id=?",
-      )
-      .bind(warehouse.id,order.id, p.productId)
-      .first<{ product_id: string; unit_cost: number; stock: number }>();
-    if (!line || line.stock < Number(p.quantity))
-      return Response.json(
-        { error: "Existencia insuficiente para devolver" },
-        { status: 409 },
-      );
-    const qty = Number(p.quantity),
-      total = qty * line.unit_cost,
-      ref = `DEV-${Date.now()}`,
-      returnId = randomUUID(),
-      payable = await d
-        .prepare("SELECT id,balance FROM payables WHERE order_id=?")
-        .bind(order.id)
-        .first<{ id: string; balance: number }>(),
-      stmts = [
-        d
-          .prepare(
-            "INSERT INTO purchase_returns (id,tenant_id,order_id,supplier_id,user_id,reference,total,reason) VALUES (?,?,?,?,?,?,?,?)",
-          )
-          .bind(
-            returnId,
-            T,
-            order.id,
-            order.supplier_id,
-            access.user.id,
-            ref,
-            total,
-            p.reason || "Devolución al proveedor",
-          ),
-        d
-          .prepare(
-            "INSERT INTO purchase_return_lines (id,return_id,product_id,quantity,unit_cost,line_total) VALUES (?,?,?,?,?,?)",
-          )
-          .bind(
-            randomUUID(),
-            returnId,
-            line.product_id,
-            qty,
-            line.unit_cost,
-            total,
-          ),
-      ];
-    const movement=await inventoryMovement({tenantId:T,branchId:B,warehouseId:warehouse.id,productId:line.product_id,userId:access.user.id,movementType:"purchase_return",quantity:-qty,reason:p.reason||"Devolución al proveedor",reference:ref,sourceType:"purchase_return",sourceId:returnId});stmts.push(...movement.statements);
-    if (payable) {
-      const next = Math.max(0, payable.balance - total);
-      stmts.push(
-        d
-          .prepare(
-            "UPDATE payables SET balance=?,original_amount=MAX(0,original_amount-?),status=? WHERE id=?",
-          )
-          .bind(next, total, next <= 0 ? "paid" : "partial", payable.id),
-      );
-    }
-    await d.batch(stmts);
-    return Response.json({ returned: true, reference: ref, total });
+  if(p.action==="pay"){
+    const payable=await d.prepare("SELECT id,supplier_id supplierId,balance_minor balanceMinor FROM payables WHERE order_id=? AND tenant_id=? AND balance_minor>0").bind(order.id,T).first<{id:string;supplierId:string;balanceMinor:number}>();if(!payable)return Response.json({error:"La orden no tiene saldo pendiente"},{status:409});let amountMinor:number;try{amountMinor=parseMoney(p.amount??0)}catch(error){return Response.json({error:error instanceof Error?error.message:"Pago inválido"},{status:400})}if(amountMinor<=0||amountMinor>payable.balanceMinor)return Response.json({error:"El pago debe ser mayor que cero y no superar el saldo"},{status:400});const methods=["cash","transfer","card","check"];if(!methods.includes(p.method||"transfer"))return Response.json({error:"Medio de pago inválido"},{status:400});const remaining=payable.balanceMinor-amountMinor,reference=p.paymentReference?.trim()||`PAG-${Date.now()}`;
+    await d.batch([d.prepare("INSERT INTO supplier_payments (id,tenant_id,supplier_id,payable_id,user_id,amount,amount_minor,method,reference) VALUES (?,?,?,?,?,?,?,?,?)").bind(randomUUID(),T,payable.supplierId,payable.id,access.user.id,moneyToMajor(amountMinor),amountMinor,p.method||"transfer",reference),d.prepare("UPDATE payables SET balance=?,balance_minor=?,status=? WHERE id=?").bind(moneyToMajor(remaining),remaining,remaining?"partial":"paid",payable.id),event(d,{tenantId:T,orderId:order.id,userId:access.user.id,action:"pay",from:order.status,to:order.status,reason:`Pago a proveedor por ${moneyToMajor(amountMinor)}`,reference})]);return Response.json({paid:moneyToMajor(amountMinor),remaining:moneyToMajor(remaining),remainingMinor:remaining,reference});
   }
-  return Response.json({ error: "Acción inválida" }, { status: 400 });
+  if(p.action==="return"){
+    if(!p.productId||Number(p.quantity)<=0||!p.reason?.trim())return Response.json({error:"Producto, cantidad y motivo son obligatorios"},{status:400});if(!["partial","received"].includes(order.status))return Response.json({error:"La orden no tiene mercancía recibida para devolver"},{status:409});const warehouseId=order.warehouseId||(await resolveWarehouse(T,B)).id,line=await d.prepare("SELECT id,product_id productId,unit_cost_minor unitCostMinor,received_quantity receivedQuantity,returned_quantity returnedQuantity,COALESCE((SELECT quantity FROM inventory_balances b WHERE b.warehouse_id=? AND b.product_id=purchase_order_lines.product_id AND b.variant_id IS NULL),0) stock FROM purchase_order_lines WHERE order_id=? AND product_id=?").bind(warehouseId,order.id,p.productId).first<{id:string;productId:string;unitCostMinor:number;receivedQuantity:number;returnedQuantity:number;stock:number}>(),qty=Number(p.quantity);if(!line||qty>line.receivedQuantity-line.returnedQuantity)return Response.json({error:"La cantidad supera lo recibido disponible para devolución"},{status:409});if(qty>line.stock)return Response.json({error:"Existencia insuficiente en la bodega de recepción"},{status:409});const totalMinor=multiplyMoney(line.unitCostMinor,qty),returnId=randomUUID(),reference=`DEV-${Date.now()}`,payable=await d.prepare("SELECT id,original_amount_minor originalMinor,balance_minor balanceMinor FROM payables WHERE order_id=?").bind(order.id).first<{id:string;originalMinor:number;balanceMinor:number}>(),movement=await inventoryMovement({tenantId:T,branchId:order.branchId,warehouseId,productId:line.productId,userId:access.user.id,movementType:"purchase_return",quantity:-qty,reason:p.reason,reference,sourceType:"purchase_return",sourceId:returnId}),statements=[d.prepare("INSERT INTO purchase_returns (id,tenant_id,order_id,supplier_id,warehouse_id,user_id,reference,total,total_minor,reason) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(returnId,T,order.id,order.supplierId,warehouseId,access.user.id,reference,moneyToMajor(totalMinor),totalMinor,p.reason.trim()),d.prepare("INSERT INTO purchase_return_lines (id,return_id,order_line_id,product_id,quantity,unit_cost,line_total,unit_cost_minor,line_total_minor) VALUES (?,?,?,?,?,?,?,?,?)").bind(randomUUID(),returnId,line.id,line.productId,qty,moneyToMajor(line.unitCostMinor),moneyToMajor(totalMinor),line.unitCostMinor,totalMinor),d.prepare("UPDATE purchase_order_lines SET returned_quantity=returned_quantity+? WHERE id=?").bind(qty,line.id),...movement.statements];
+    if(payable){const applied=Math.min(totalMinor,payable.balanceMinor),newBalance=payable.balanceMinor-applied,newOriginal=Math.max(0,payable.originalMinor-totalMinor);statements.push(d.prepare("UPDATE payables SET original_amount=?,balance=?,original_amount_minor=?,balance_minor=?,status=? WHERE id=?").bind(moneyToMajor(newOriginal),moneyToMajor(newBalance),newOriginal,newBalance,newBalance?"partial":"paid",payable.id));const credit=totalMinor-applied;if(credit>0)statements.push(d.prepare("INSERT INTO supplier_credits (id,tenant_id,supplier_id,return_id,amount_minor,balance_minor,reason) VALUES (?,?,?,?,?,?,?)").bind(randomUUID(),T,order.supplierId,returnId,credit,credit,p.reason.trim()))}
+    statements.push(event(d,{tenantId:T,orderId:order.id,userId:access.user.id,action:"return",from:order.status,to:order.status,reason:p.reason,reference}));await d.batch(statements);return Response.json({returned:true,reference,total:moneyToMajor(totalMinor),credit:moneyToMajor(Math.max(0,totalMinor-(payable?.balanceMinor||0)))});
+  }
+  return Response.json({error:"Acción inválida"},{status:400});
 }

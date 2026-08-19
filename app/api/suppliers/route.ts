@@ -8,7 +8,7 @@ export async function GET(req: Request) {
     q = `%${new URL(req.url).searchParams.get("q") || ""}%`,
     rows = await d
       .prepare(
-        "SELECT s.id,s.document_number documentNumber,s.name,s.contact_name contactName,s.phone,s.email,s.payment_days paymentDays,s.active,COALESCE(SUM(p.balance),0) balance FROM suppliers s LEFT JOIN payables p ON p.supplier_id=s.id WHERE s.tenant_id=? AND (s.name LIKE ? OR s.document_number LIKE ?) GROUP BY s.id ORDER BY s.name",
+        "SELECT s.id,s.document_number documentNumber,s.name,s.contact_name contactName,s.phone,s.email,s.payment_days paymentDays,s.active,COALESCE(SUM(p.balance_minor),0)/100.0 balance FROM suppliers s LEFT JOIN payables p ON p.supplier_id=s.id WHERE s.tenant_id=? AND (s.name LIKE ? OR s.document_number LIKE ?) GROUP BY s.id ORDER BY s.name",
       )
       .bind(access.user.tenantId, q, q)
       .all();
@@ -30,6 +30,8 @@ export async function POST(req: Request) {
       { error: "NIT/documento y nombre son obligatorios" },
       { status: 400 },
     );
+  if(p.email?.trim()&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(p.email.trim()))return Response.json({error:"Correo electrónico inválido"},{status:400});
+  if(!Number.isInteger(Number(p.paymentDays??30))||Number(p.paymentDays??30)<0||Number(p.paymentDays??30)>365)return Response.json({error:"El plazo de pago debe estar entre 0 y 365 días"},{status:400});
   try {
     const id = randomUUID();
     await getRuntimeEnv()

@@ -348,9 +348,13 @@ export const purchaseOrders = sqliteTable(
       .notNull()
       .references(() => appUsers.id),
     number: text("number").notNull(),
-    status: text("status").notNull().default("ordered"),
+    status: text("status").notNull().default("draft"),
     total: real("total").notNull(),
     notes: text("notes"),
+    approvedBy: text("approved_by"),
+    approvedAt: text("approved_at"),
+    warehouseId: text("warehouse_id"),
+    totalMinor: integer("total_minor").notNull().default(0),
     createdAt: text("created_at")
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
@@ -369,6 +373,9 @@ export const purchaseOrderLines = sqliteTable("purchase_order_lines", {
   receivedQuantity: real("received_quantity").notNull().default(0),
   unitCost: real("unit_cost").notNull(),
   lineTotal: real("line_total").notNull(),
+  unitCostMinor: integer("unit_cost_minor").notNull().default(0),
+  lineTotalMinor: integer("line_total_minor").notNull().default(0),
+  returnedQuantity: real("returned_quantity").notNull().default(0),
 });
 export const purchaseReceipts = sqliteTable("purchase_receipts", {
   id: text("id").primaryKey(),
@@ -383,6 +390,8 @@ export const purchaseReceipts = sqliteTable("purchase_receipts", {
     .references(() => appUsers.id),
   reference: text("reference").notNull(),
   total: real("total").notNull(),
+  warehouseId: text("warehouse_id"),
+  totalMinor: integer("total_minor").notNull().default(0),
   createdAt: text("created_at")
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
@@ -402,6 +411,8 @@ export const payables = sqliteTable("payables", {
   balance: real("balance").notNull(),
   dueDate: text("due_date").notNull(),
   status: text("status").notNull().default("pending"),
+  originalAmountMinor: integer("original_amount_minor").notNull().default(0),
+  balanceMinor: integer("balance_minor").notNull().default(0),
   createdAt: text("created_at")
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
@@ -421,6 +432,7 @@ export const supplierPayments = sqliteTable("supplier_payments", {
     .notNull()
     .references(() => appUsers.id),
   amount: real("amount").notNull(),
+  amountMinor: integer("amount_minor").notNull().default(0),
   method: text("method").notNull(),
   reference: text("reference"),
   createdAt: text("created_at")
@@ -458,6 +470,8 @@ export const purchaseReturns = sqliteTable("purchase_returns", {
     .references(() => appUsers.id),
   reference: text("reference").notNull(),
   total: real("total").notNull(),
+  warehouseId: text("warehouse_id"),
+  totalMinor: integer("total_minor").notNull().default(0),
   reason: text("reason").notNull(),
   createdAt: text("created_at")
     .notNull()
@@ -474,6 +488,15 @@ export const purchaseReturnLines = sqliteTable("purchase_return_lines", {
   quantity: real("quantity").notNull(),
   unitCost: real("unit_cost").notNull(),
   lineTotal: real("line_total").notNull(),
+  orderLineId: text("order_line_id"),
+  unitCostMinor: integer("unit_cost_minor").notNull().default(0),
+  lineTotalMinor: integer("line_total_minor").notNull().default(0),
+});
+export const purchaseEvents = sqliteTable("purchase_events", {
+  id:text("id").primaryKey(),tenantId:text("tenant_id").notNull(),orderId:text("order_id").notNull(),userId:text("user_id").notNull(),action:text("action").notNull(),fromStatus:text("from_status"),toStatus:text("to_status").notNull(),reason:text("reason").notNull(),reference:text("reference"),createdAt:text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+export const supplierCredits = sqliteTable("supplier_credits", {
+  id:text("id").primaryKey(),tenantId:text("tenant_id").notNull(),supplierId:text("supplier_id").notNull(),returnId:text("return_id").notNull(),amountMinor:integer("amount_minor").notNull(),balanceMinor:integer("balance_minor").notNull(),reason:text("reason").notNull(),createdAt:text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 export const userBranchAccess = sqliteTable(
   "user_branch_access",
