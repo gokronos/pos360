@@ -50,6 +50,9 @@ INSERT OR IGNORE INTO customers (id,tenant_id,document_type,document_number,name
 ('customer_ana','tenant_demo','CC','1090123456','Ana Rodríguez','3001234567','ana@ejemplo.com',500000,30,1),
 ('customer_tienda','tenant_demo','NIT','901234567','Tienda Los Amigos','3107654321','compras@losamigos.co',2000000,45,1);
 
+UPDATE customers SET credit_limit_minor=CAST(ROUND(credit_limit*100) AS INTEGER)
+WHERE credit_limit_minor=0 AND credit_limit>0;
+
 INSERT OR IGNORE INTO suppliers (id,tenant_id,document_number,name,contact_name,phone,email,payment_days,active) VALUES
 ('supplier_alimentos','tenant_demo','900100200','Distribuidora Nacional de Alimentos','Laura Gómez','6015550101','ventas@distribuidora.co',30,1),
 ('supplier_farma','tenant_demo','800300400','Laboratorios Salud Colombia','Diego Pérez','6015550202','pedidos@salud.co',45,1),

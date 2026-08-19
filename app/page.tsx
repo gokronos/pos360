@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import Purchases from "./purchases-advanced";
+import Customers from "./customers-advanced";
 import Settings from "./admin-settings";
 import SyncStatus, {
   offlinePost,
@@ -225,7 +226,7 @@ export default function Home() {
             <Purchases notify={notify} />
           )}{" "}
           {view === "clientes" && can("customers") && (
-            <Clients notify={notify} />
+            <Customers notify={notify} />
           )}{" "}
           {view === "reportes" && can("reports") && <Reports />}{" "}
           {view === "configuracion" && can("settings") && (
@@ -1559,7 +1560,7 @@ function Alert({
     </div>
   );
 }
-function Clients({ notify }: { notify: (s: string) => void }) {
+function ClientsLegacy({ notify }: { notify: (s: string) => void }) {
   type C = {
     id: string;
     documentType: string;

@@ -1,121 +1,59 @@
 import { randomUUID } from "node:crypto";
-import { getRuntimeEnv } from "../../../db/runtime-env";
 import { requireAccess } from "../../../db/authz";
-export async function GET(req: Request) {
-  const access = await requireAccess(req, "customers");
-  if (access.error) return access.error;
-  const d = getRuntimeEnv().DB,
-    q = `%${new URL(req.url).searchParams.get("q") || ""}%`;
-  const rows = await d
-    .prepare(
-      "SELECT c.id,c.document_type documentType,c.document_number documentNumber,c.name,c.phone,c.email,c.credit_limit creditLimit,c.credit_days creditDays,c.active,COALESCE(SUM(r.balance),0) balance,COALESCE(SUM(CASE WHEN r.balance>0 AND r.due_date<date('now') THEN r.balance ELSE 0 END),0) overdue FROM customers c LEFT JOIN receivables r ON r.customer_id=c.id WHERE c.tenant_id=? AND (c.name LIKE ? OR c.document_number LIKE ? OR c.phone LIKE ?) GROUP BY c.id ORDER BY c.active DESC,c.name LIMIT 200",
-    )
-    .bind(access.user.tenantId, q, q, q)
-    .all();
-  return Response.json({ customers: rows.results });
-}
-export async function POST(req: Request) {
-  const access = await requireAccess(req, "customers", "create");
-  if (access.error) return access.error;
-  const p = (await req.json()) as {
-    documentType?: string;
-    documentNumber?: string;
-    name?: string;
-    phone?: string;
-    email?: string;
-    creditLimit?: number;
-    creditDays?: number;
-  };
-  if (!p.documentNumber?.trim() || !p.name?.trim())
-    return Response.json(
-      { error: "Documento y nombre son obligatorios" },
-      { status: 400 },
-    );
-  try {
-    const d = getRuntimeEnv().DB,
-      id = randomUUID();
-    await d
-      .prepare(
-        "INSERT INTO customers (id,tenant_id,document_type,document_number,name,phone,email,credit_limit,credit_days) VALUES (?,?,?,?,?,?,?,?,?)",
-      )
-      .bind(
-        id,
-        access.user.tenantId,
-        p.documentType || "CC",
-        p.documentNumber.trim(),
-        p.name.trim(),
-        p.phone?.trim() || null,
-        p.email?.trim() || null,
-        Number(p.creditLimit || 0),
-        Number(p.creditDays || 0),
-      )
-      .run();
-    return Response.json(
-      { customer: { id, ...p, balance: 0, overdue: 0, active: 1 } },
-      { status: 201 },
-    );
-  } catch (e) {
-    return Response.json(
-      {
-        error:
-          e instanceof Error && e.message.includes("UNIQUE")
-            ? "Ya existe un cliente con ese documento"
-            : "No fue posible guardar el cliente",
-      },
-      { status: 409 },
-    );
+import { moneyToMajor, parseMoney } from "../../../db/money";
+import { getRuntimeEnv } from "../../../db/runtime-env";
+
+const audit=(d:ReturnType<typeof getRuntimeEnv>["DB"],x:{tenantId:string;customerId:string;userId:string;action:string;reason:string;amountMinor?:number;reference?:string})=>d.prepare("INSERT INTO customer_events (id,tenant_id,customer_id,user_id,action,amount_minor,reason,reference) VALUES (?,?,?,?,?,?,?,?)").bind(randomUUID(),x.tenantId,x.customerId,x.userId,x.action,x.amountMinor||0,x.reason,x.reference||null);
+const validEmail=(v?:string)=>!v?.trim()||/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
+
+export async function GET(req:Request){
+  const access=await requireAccess(req,"customers");if(access.error)return access.error;
+  const d=getRuntimeEnv().DB,T=access.user.tenantId,url=new URL(req.url),id=url.searchParams.get("customerId");
+  if(id){
+    const customer=await d.prepare("SELECT c.id,c.document_type documentType,c.document_number documentNumber,c.name,c.commercial_name commercialName,c.phone,c.email,c.credit_limit_minor/100.0 creditLimit,c.credit_limit_minor creditLimitMinor,c.credit_days creditDays,c.price_list_id priceListId,pl.name priceListName,c.blocked,c.block_reason blockReason,c.consent_email consentEmail,c.consent_sms consentSms,c.consent_whatsapp consentWhatsapp,c.consent_at consentAt,c.consent_source consentSource,c.notes,c.active,COALESCE((SELECT SUM(balance_minor) FROM receivables r WHERE r.customer_id=c.id),0)/100.0 balance,COALESCE((SELECT SUM(CASE WHEN balance_minor>0 AND due_date<date('now') THEN balance_minor ELSE 0 END) FROM receivables r WHERE r.customer_id=c.id),0)/100.0 overdue FROM customers c LEFT JOIN price_lists pl ON pl.id=c.price_list_id WHERE c.id=? AND c.tenant_id=?").bind(id,T).first();if(!customer)return Response.json({error:"Cliente no encontrado"},{status:404});
+    const [addresses,receivables,payments,events,authorizations,credits]=await Promise.all([
+      d.prepare("SELECT id,label,address,city,state,postal_code postalCode,country,is_default isDefault,active FROM customer_addresses WHERE tenant_id=? AND customer_id=? ORDER BY is_default DESC,created_at").bind(T,id).all(),
+      d.prepare("SELECT r.id,r.sale_id saleId,r.original_amount_minor/100.0 originalAmount,r.balance_minor/100.0 balance,r.due_date dueDate,r.status,r.created_at createdAt,s.local_id saleNumber FROM receivables r JOIN sales s ON s.id=r.sale_id WHERE r.tenant_id=? AND r.customer_id=? ORDER BY r.created_at DESC").bind(T,id).all(),
+      d.prepare("SELECT p.id,p.amount_minor/100.0 amount,p.method,p.reference,p.created_at createdAt,u.display_name userName,r.sale_id saleId FROM customer_payments p JOIN app_users u ON u.id=p.user_id LEFT JOIN receivables r ON r.id=p.receivable_id WHERE p.tenant_id=? AND p.customer_id=? ORDER BY p.created_at DESC,p.rowid DESC").bind(T,id).all(),
+      d.prepare("SELECT e.id,e.action,e.amount_minor/100.0 amount,e.reason,e.reference,e.created_at createdAt,u.display_name userName FROM customer_events e JOIN app_users u ON u.id=e.user_id WHERE e.tenant_id=? AND e.customer_id=? ORDER BY e.created_at DESC,e.rowid DESC LIMIT 100").bind(T,id).all(),
+      d.prepare("SELECT a.id,a.amount_minor/100.0 amount,a.reason,a.expires_at expiresAt,a.used_at usedAt,u.display_name authorizedBy FROM credit_authorizations a JOIN app_users u ON u.id=a.authorized_by WHERE a.tenant_id=? AND a.customer_id=? ORDER BY a.created_at DESC LIMIT 30").bind(T,id).all(),
+      d.prepare("SELECT id,amount_minor/100.0 amount,balance_minor/100.0 balance,reason,created_at createdAt FROM customer_credits WHERE tenant_id=? AND customer_id=? ORDER BY created_at DESC").bind(T,id).all(),
+    ]);return Response.json({customer,addresses:addresses.results,receivables:receivables.results,payments:payments.results,events:events.results,authorizations:authorizations.results,credits:credits.results});
   }
+  const q=`%${(url.searchParams.get("q")||"").trim()}%`,rows=await d.prepare("SELECT c.id,c.document_type documentType,c.document_number documentNumber,c.name,c.commercial_name commercialName,c.phone,c.email,c.credit_limit_minor/100.0 creditLimit,c.credit_days creditDays,c.price_list_id priceListId,pl.name priceListName,c.blocked,c.block_reason blockReason,c.consent_email consentEmail,c.consent_sms consentSms,c.consent_whatsapp consentWhatsapp,c.active,COALESCE(SUM(r.balance_minor),0)/100.0 balance,COALESCE(SUM(CASE WHEN r.balance_minor>0 AND r.due_date<date('now') THEN r.balance_minor ELSE 0 END),0)/100.0 overdue,COALESCE(MIN(CASE WHEN r.balance_minor>0 THEN r.due_date END),'') nextDue FROM customers c LEFT JOIN receivables r ON r.customer_id=c.id LEFT JOIN price_lists pl ON pl.id=c.price_list_id WHERE c.tenant_id=? AND (c.name LIKE ? OR c.commercial_name LIKE ? OR c.document_number LIKE ? OR c.phone LIKE ?) GROUP BY c.id ORDER BY c.blocked DESC,overdue DESC,c.active DESC,c.name LIMIT 300").bind(T,q,q,q,q).all();
+  const summary=await d.prepare("SELECT COALESCE(SUM(balance_minor),0)/100.0 total,COALESCE(SUM(CASE WHEN balance_minor>0 AND due_date<date('now') THEN balance_minor ELSE 0 END),0)/100.0 overdue,COUNT(CASE WHEN balance_minor>0 THEN 1 END) openAccounts FROM receivables WHERE tenant_id=?").bind(T).first();return Response.json({customers:rows.results,summary});
 }
-export async function PATCH(req: Request) {
-  const access = await requireAccess(req, "customers", "edit");
-  if (access.error) return access.error;
-  const p = (await req.json()) as {
-    id?: string;
-    amount?: number;
-    method?: string;
-    receivableId?: string;
-  };
-  if (!p.id || Number(p.amount) <= 0)
-    return Response.json(
-      { error: "Cliente y valor son obligatorios" },
-      { status: 400 },
-    );
-  const d = getRuntimeEnv().DB,
-    amount = Number(p.amount),
-    open = await d
-      .prepare(
-        "SELECT id,balance FROM receivables WHERE tenant_id=? AND customer_id=? AND balance>0 ORDER BY due_date,created_at LIMIT 1",
-      )
-      .bind(access.user.tenantId, p.id)
-      .first<{ id: string; balance: number }>();
-  if (!open)
-    return Response.json(
-      { error: "El cliente no tiene cartera pendiente" },
-      { status: 409 },
-    );
-  const applied = Math.min(amount, open.balance),
-    remaining = open.balance - applied,
-    paymentId = randomUUID();
-  await d.batch([
-    d
-      .prepare(
-        "INSERT INTO customer_payments (id,tenant_id,customer_id,receivable_id,user_id,amount,method,reference) VALUES (?,?,?,?,?,?,?,?)",
-      )
-      .bind(
-        paymentId,
-        access.user.tenantId,
-        p.id,
-        open.id,
-        access.user.id,
-        applied,
-        p.method || "cash",
-        `AB-${Date.now()}`,
-      ),
-    d
-      .prepare("UPDATE receivables SET balance=?,status=? WHERE id=?")
-      .bind(remaining, remaining <= 0 ? "paid" : "partial", open.id),
-  ]);
-  return Response.json({
-    payment: { id: paymentId, amount: applied, remaining },
-  });
+
+type Address={label?:string;address?:string;city?:string;state?:string;postalCode?:string;country?:string;isDefault?:boolean};
+type CustomerInput={documentType?:string;documentNumber?:string;name?:string;commercialName?:string;phone?:string;email?:string;creditLimit?:number|string;creditDays?:number;priceListId?:string;notes?:string;consentEmail?:boolean;consentSms?:boolean;consentWhatsapp?:boolean;consentSource?:string;address?:Address};
+export async function POST(req:Request){
+  const access=await requireAccess(req,"customers","create");if(access.error)return access.error;const p=(await req.json()) as CustomerInput;
+  if(!p.documentNumber?.trim()||!p.name?.trim())return Response.json({error:"Documento y nombre son obligatorios"},{status:400});if(!validEmail(p.email))return Response.json({error:"Correo electrónico inválido"},{status:400});if(!Number.isInteger(Number(p.creditDays||0))||Number(p.creditDays||0)<0||Number(p.creditDays||0)>365)return Response.json({error:"El plazo debe estar entre 0 y 365 días"},{status:400});let creditLimitMinor:number;try{creditLimitMinor=parseMoney(p.creditLimit||0)}catch(error){return Response.json({error:error instanceof Error?error.message:"Cupo inválido"},{status:400})}if(creditLimitMinor<0)return Response.json({error:"El cupo no puede ser negativo"},{status:400});
+  const d=getRuntimeEnv().DB,T=access.user.tenantId;if(p.priceListId&&!await d.prepare("SELECT id FROM price_lists WHERE id=? AND tenant_id=? AND active=1").bind(p.priceListId,T).first())return Response.json({error:"Lista de precios inválida"},{status:403});const id=randomUUID(),consent=Boolean(p.consentEmail||p.consentSms||p.consentWhatsapp),statements=[d.prepare("INSERT INTO customers (id,tenant_id,document_type,document_number,name,commercial_name,phone,email,credit_limit,credit_limit_minor,credit_days,price_list_id,notes,consent_email,consent_sms,consent_whatsapp,consent_at,consent_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(id,T,p.documentType||"CC",p.documentNumber.trim(),p.name.trim(),p.commercialName?.trim()||null,p.phone?.trim()||null,p.email?.trim()||null,moneyToMajor(creditLimitMinor),creditLimitMinor,Number(p.creditDays||0),p.priceListId||null,p.notes?.trim()||null,Number(Boolean(p.consentEmail)),Number(Boolean(p.consentSms)),Number(Boolean(p.consentWhatsapp)),consent?new Date().toISOString():null,consent?p.consentSource?.trim()||"Registro administrativo":null),audit(d,{tenantId:T,customerId:id,userId:access.user.id,action:"create",reason:"Cliente creado"})];
+  if(p.address?.address?.trim()&&p.address.city?.trim())statements.push(d.prepare("INSERT INTO customer_addresses (id,tenant_id,customer_id,label,address,city,state,postal_code,country,is_default) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(randomUUID(),T,id,p.address.label?.trim()||"Principal",p.address.address.trim(),p.address.city.trim(),p.address.state?.trim()||null,p.address.postalCode?.trim()||null,p.address.country||"CO",1));
+  try{await d.batch(statements);return Response.json({customer:{id,...p,creditLimit:moneyToMajor(creditLimitMinor),balance:0,overdue:0,active:1}},{status:201})}catch(error){return Response.json({error:error instanceof Error&&error.message.includes("UNIQUE")?"Ya existe un cliente con ese documento":"No fue posible guardar el cliente"},{status:409})}
+}
+
+type Patch=CustomerInput&{id?:string;action?:"profile"|"payment"|"block"|"consent"|"address"|"authorize_credit";amount?:number|string;method?:string;reference?:string;reason?:string;blocked?:boolean;expiresHours?:number};
+export async function PATCH(req:Request){
+  const access=await requireAccess(req,"customers","edit");if(access.error)return access.error;const p=(await req.json()) as Patch;if(!p.id)return Response.json({error:"Cliente requerido"},{status:400});const d=getRuntimeEnv().DB,T=access.user.tenantId,customer=await d.prepare("SELECT id FROM customers WHERE id=? AND tenant_id=?").bind(p.id,T).first();if(!customer)return Response.json({error:"Cliente no encontrado"},{status:404});
+  if(p.action==="payment"||(!p.action&&p.amount!==undefined)){
+    let amountMinor:number;try{amountMinor=parseMoney(p.amount||0)}catch(error){return Response.json({error:error instanceof Error?error.message:"Abono inválido"},{status:400})}const opens=await d.prepare("SELECT id,balance_minor balanceMinor FROM receivables WHERE tenant_id=? AND customer_id=? AND balance_minor>0 ORDER BY due_date,created_at").bind(T,p.id).all<{id:string;balanceMinor:number}>(),total=opens.results.reduce((s,x)=>s+x.balanceMinor,0);if(amountMinor<=0||amountMinor>total)return Response.json({error:"El abono debe ser mayor que cero y no superar la cartera"},{status:400});if(!["cash","transfer","card","check"].includes(p.method||"cash"))return Response.json({error:"Medio de pago inválido"},{status:400});const reference=p.reference?.trim()||`AB-${Date.now()}`,statements=[];let pending=amountMinor;for(const open of opens.results){if(!pending)break;const applied=Math.min(pending,open.balanceMinor),remaining=open.balanceMinor-applied;statements.push(d.prepare("INSERT INTO customer_payments (id,tenant_id,customer_id,receivable_id,user_id,amount,amount_minor,method,reference) VALUES (?,?,?,?,?,?,?,?,?)").bind(randomUUID(),T,p.id,open.id,access.user.id,moneyToMajor(applied),applied,p.method||"cash",reference),d.prepare("UPDATE receivables SET balance=?,balance_minor=?,status=? WHERE id=?").bind(moneyToMajor(remaining),remaining,remaining?"partial":"paid",open.id));pending-=applied}statements.push(audit(d,{tenantId:T,customerId:p.id,userId:access.user.id,action:"payment",amountMinor,reason:p.reason?.trim()||"Abono a cartera",reference}));await d.batch(statements);return Response.json({payment:{amount:moneyToMajor(amountMinor),remaining:moneyToMajor(total-amountMinor),reference}});
+  }
+  if(p.action==="block"){
+    if(!["owner","admin","supervisor"].includes(access.user.role))return Response.json({error:"El bloqueo requiere autorización administrativa"},{status:403});if(p.blocked&&!p.reason?.trim())return Response.json({error:"El motivo del bloqueo es obligatorio"},{status:400});await d.batch([d.prepare("UPDATE customers SET blocked=?,block_reason=?,blocked_by=?,blocked_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND tenant_id=?").bind(Number(Boolean(p.blocked)),p.blocked?p.reason!.trim():null,p.blocked?access.user.id:null,p.blocked?new Date().toISOString():null,p.id,T),audit(d,{tenantId:T,customerId:p.id,userId:access.user.id,action:p.blocked?"block":"unblock",reason:p.reason?.trim()||"Cliente desbloqueado"})]);return Response.json({blocked:Boolean(p.blocked)});
+  }
+  if(p.action==="authorize_credit"){
+    if(!["owner","admin","supervisor"].includes(access.user.role))return Response.json({error:"La autorización requiere propietario, administrador o supervisor"},{status:403});let amountMinor:number;try{amountMinor=parseMoney(p.amount||0)}catch{return Response.json({error:"Monto inválido"},{status:400})}if(amountMinor<=0||!p.reason?.trim())return Response.json({error:"Monto y motivo son obligatorios"},{status:400});const id=randomUUID(),expires=new Date(Date.now()+Math.min(72,Math.max(1,Number(p.expiresHours||24)))*3600000).toISOString();await d.batch([d.prepare("INSERT INTO credit_authorizations (id,tenant_id,customer_id,requested_by,authorized_by,amount_minor,reason,expires_at) VALUES (?,?,?,?,?,?,?,?)").bind(id,T,p.id,access.user.id,access.user.id,amountMinor,p.reason.trim(),expires),audit(d,{tenantId:T,customerId:p.id,userId:access.user.id,action:"credit_authorization",amountMinor,reason:p.reason,reference:id})]);return Response.json({authorization:{id,amount:moneyToMajor(amountMinor),expiresAt:expires}});
+  }
+  if(p.action==="consent"){
+    const granted=Boolean(p.consentEmail||p.consentSms||p.consentWhatsapp);await d.batch([d.prepare("UPDATE customers SET consent_email=?,consent_sms=?,consent_whatsapp=?,consent_at=?,consent_source=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND tenant_id=?").bind(Number(Boolean(p.consentEmail)),Number(Boolean(p.consentSms)),Number(Boolean(p.consentWhatsapp)),new Date().toISOString(),p.consentSource?.trim()||"Actualización administrativa",p.id,T),audit(d,{tenantId:T,customerId:p.id,userId:access.user.id,action:granted?"consent_granted":"consent_revoked",reason:p.consentSource?.trim()||"Preferencias de comunicación actualizadas"})]);return Response.json({consentUpdated:true});
+  }
+  if(p.action==="address"){
+    if(!p.address?.address?.trim()||!p.address.city?.trim())return Response.json({error:"Dirección y ciudad son obligatorias"},{status:400});const id=randomUUID(),statements=[];if(p.address.isDefault)statements.push(d.prepare("UPDATE customer_addresses SET is_default=0 WHERE tenant_id=? AND customer_id=?").bind(T,p.id));statements.push(d.prepare("INSERT INTO customer_addresses (id,tenant_id,customer_id,label,address,city,state,postal_code,country,is_default) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(id,T,p.id,p.address.label?.trim()||"Dirección",p.address.address.trim(),p.address.city.trim(),p.address.state?.trim()||null,p.address.postalCode?.trim()||null,p.address.country||"CO",Number(Boolean(p.address.isDefault))),audit(d,{tenantId:T,customerId:p.id,userId:access.user.id,action:"address_added",reason:`Dirección ${p.address.label||"registrada"}`}));await d.batch(statements);return Response.json({address:{id}});
+  }
+  if(p.action==="profile"){
+    if(!validEmail(p.email))return Response.json({error:"Correo electrónico inválido"},{status:400});let limitMinor:number;try{limitMinor=parseMoney(p.creditLimit||0)}catch{return Response.json({error:"Cupo inválido"},{status:400})}if(limitMinor<0||!Number.isInteger(Number(p.creditDays||0))||Number(p.creditDays||0)<0||Number(p.creditDays||0)>365)return Response.json({error:"Revise cupo y plazo"},{status:400});if(p.priceListId&&!await d.prepare("SELECT id FROM price_lists WHERE id=? AND tenant_id=? AND active=1").bind(p.priceListId,T).first())return Response.json({error:"Lista de precios inválida"},{status:403});await d.batch([d.prepare("UPDATE customers SET name=COALESCE(?,name),commercial_name=?,phone=?,email=?,credit_limit=?,credit_limit_minor=?,credit_days=?,price_list_id=?,notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND tenant_id=?").bind(p.name?.trim()||null,p.commercialName?.trim()||null,p.phone?.trim()||null,p.email?.trim()||null,moneyToMajor(limitMinor),limitMinor,Number(p.creditDays||0),p.priceListId||null,p.notes?.trim()||null,p.id,T),audit(d,{tenantId:T,customerId:p.id,userId:access.user.id,action:"profile_update",reason:p.reason?.trim()||"Perfil comercial actualizado"})]);return Response.json({updated:true});
+  }
+  return Response.json({error:"Acción inválida"},{status:400});
 }

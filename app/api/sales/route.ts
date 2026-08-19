@@ -24,6 +24,8 @@ export async function POST(req: Request) {
   const d = getRuntimeEnv().DB,
     user = access.user.id,
     warehouse = await resolveWarehouse(T, B),
+    customerProfile = body.customerId ? await d.prepare("SELECT price_list_id priceListId,credit_limit_minor creditLimitMinor,credit_days creditDays,blocked,block_reason blockReason,active,COALESCE((SELECT SUM(balance_minor) FROM receivables r WHERE r.customer_id=customers.id),0) currentBalanceMinor,COALESCE((SELECT SUM(CASE WHEN balance_minor>0 AND due_date<date('now') THEN balance_minor ELSE 0 END) FROM receivables r WHERE r.customer_id=customers.id),0) overdueMinor FROM customers WHERE id=? AND tenant_id=?").bind(body.customerId,T).first<{priceListId:string|null;creditLimitMinor:number;creditDays:number;blocked:number;blockReason:string|null;active:number;currentBalanceMinor:number;overdueMinor:number}>() : null,
+    selectedPriceListId = body.priceListId || customerProfile?.priceListId || "",
     inventoryPolicy = await d
       .prepare(
         "SELECT allow_negative_stock allowNegativeStock FROM business_settings WHERE tenant_id=?",
@@ -36,12 +38,12 @@ export async function POST(req: Request) {
       )
       .bind(T, user)
       .first<{ id: string }>();
-  if (body.priceListId) {
+  if (selectedPriceListId) {
     const list = await d
       .prepare(
         "SELECT id FROM price_lists WHERE id=? AND tenant_id=? AND active=1",
       )
-      .bind(body.priceListId, T)
+      .bind(selectedPriceListId, T)
       .first();
     if (!list)
       return Response.json(
@@ -78,7 +80,7 @@ export async function POST(req: Request) {
               "SELECT p.id,COALESCE((SELECT pp.price_minor FROM product_prices pp WHERE pp.product_id=p.id AND pp.variant_id=v.id AND pp.price_list_id=? AND pp.min_quantity<=? ORDER BY pp.min_quantity DESC LIMIT 1),v.price_minor) priceMinor,COALESCE((SELECT quantity FROM inventory_balances b WHERE b.warehouse_id=? AND b.product_id=p.id AND b.variant_id=v.id),0) stock,p.track_inventory trackInventory,v.id variantId FROM product_variants v JOIN products p ON p.id=v.product_id WHERE v.id=? AND p.id=? AND v.tenant_id=? AND p.tenant_id=? AND v.active=1 AND p.active=1",
             )
             .bind(
-              body.priceListId || "",
+              selectedPriceListId,
               item.quantity,
               warehouse.id,
               item.variantId,
@@ -90,7 +92,7 @@ export async function POST(req: Request) {
             .prepare(
               "SELECT id,COALESCE((SELECT pp.price_minor FROM product_prices pp WHERE pp.product_id=products.id AND pp.price_list_id=? AND pp.variant_id IS NULL AND pp.min_quantity<=? ORDER BY pp.min_quantity DESC LIMIT 1),price_minor) priceMinor,COALESCE((SELECT quantity FROM inventory_balances b WHERE b.warehouse_id=? AND b.product_id=products.id AND b.variant_id IS NULL),0) stock,track_inventory trackInventory,NULL variantId FROM products WHERE id=? AND tenant_id=? AND active=1",
             )
-            .bind(body.priceListId || "", item.quantity, warehouse.id, item.productId, T)
+            .bind(selectedPriceListId, item.quantity, warehouse.id, item.productId, T)
     ).first<{
       id: string;
       priceMinor: number;
@@ -175,25 +177,14 @@ export async function POST(req: Request) {
       { error: "Seleccione cliente para el pago a crédito" },
       { status: 400 },
     );
+  let creditAuthorizationId:string|null=null;
   if (body.customerId && payments.some((p) => p.method === "credit")) {
-    const credit = payments
+    const creditMinor = payments
         .filter((p) => p.method === "credit")
-        .reduce((s, p) => s + p.amountMinor, 0),
-      c = await d
-        .prepare(
-          "SELECT credit_limit creditLimit,credit_days creditDays,COALESCE((SELECT SUM(balance) FROM receivables WHERE customer_id=customers.id),0) currentBalance FROM customers WHERE id=? AND tenant_id=? AND active=1",
-        )
-        .bind(body.customerId, T)
-        .first<{
-          creditLimit: number;
-          creditDays: number;
-          currentBalance: number;
-        }>();
-    if (!c || c.currentBalance + moneyToMajor(credit) > c.creditLimit)
-      return Response.json(
-        { error: "El crédito supera el cupo disponible" },
-        { status: 409 },
-      );
+        .reduce((s, p) => s + p.amountMinor, 0);
+    if(!customerProfile?.active)return Response.json({error:"El cliente no está activo"},{status:409});
+    const requiresAuthorization=Boolean(customerProfile.blocked||customerProfile.overdueMinor>0||customerProfile.currentBalanceMinor+creditMinor>customerProfile.creditLimitMinor);
+    if(requiresAuthorization){const authorization=await d.prepare("SELECT id FROM credit_authorizations WHERE tenant_id=? AND customer_id=? AND used_at IS NULL AND expires_at>datetime('now') AND amount_minor>=? ORDER BY created_at LIMIT 1").bind(T,body.customerId,creditMinor).first<{id:string}>();if(!authorization)return Response.json({error:customerProfile.blocked?`Cliente bloqueado: ${customerProfile.blockReason||"requiere autorización"}`:customerProfile.overdueMinor>0?"El cliente tiene cartera vencida y requiere autorización":"El crédito supera el cupo y requiere autorización",needsCreditAuthorization:true},{status:403});creditAuthorizationId=authorization.id}
   }
   const saleId = randomUUID(), inventoryStatements=[];
   for(const line of lines.filter((l) => l.trackInventory)){
@@ -250,6 +241,7 @@ export async function POST(req: Request) {
           ),
       ),
       ...inventoryStatements,
+      ...(creditAuthorizationId?[d.prepare("UPDATE credit_authorizations SET used_at=CURRENT_TIMESTAMP,sale_id=? WHERE id=? AND used_at IS NULL").bind(saleId,creditAuthorizationId)]:[]),
       d
         .prepare(
           "INSERT INTO sync_events (id,tenant_id,node_id,event_type,entity_id,payload,status) VALUES (?,?,?,?,?,?,?)",
@@ -303,31 +295,9 @@ export async function POST(req: Request) {
           saleId,
         ),
     );
-    if (p.method === "credit" && body.customerId) {
-      const days = await d
-          .prepare("SELECT credit_days days FROM customers WHERE id=?")
-          .bind(body.customerId)
-          .first<{ days: number }>(),
-        due = new Date(Date.now() + Math.max(0, days?.days || 0) * 86400000)
-          .toISOString()
-          .slice(0, 10);
-      stmts.push(
-        d
-          .prepare(
-            "INSERT INTO receivables (id,tenant_id,customer_id,sale_id,original_amount,balance,due_date,status) VALUES (?,?,?,?,?,?,?,'pending')",
-          )
-          .bind(
-            randomUUID(),
-            T,
-            body.customerId,
-            saleId,
-            p.amount,
-            p.amount,
-            due,
-          ),
-      );
-    }
   }
+  const creditMinor=payments.filter(p=>p.method==="credit").reduce((sum,p)=>sum+p.amountMinor,0);
+  if(creditMinor&&body.customerId){const due=new Date(Date.now()+Math.max(0,customerProfile?.creditDays||0)*86400000).toISOString().slice(0,10);stmts.push(d.prepare("INSERT INTO receivables (id,tenant_id,branch_id,customer_id,sale_id,original_amount,balance,original_amount_minor,balance_minor,due_date,status) VALUES (?,?,?,?,?,?,?,?,?,?,'pending')").bind(randomUUID(),T,B,body.customerId,saleId,moneyToMajor(creditMinor),moneyToMajor(creditMinor),creditMinor,creditMinor,due),d.prepare("INSERT INTO customer_events (id,tenant_id,customer_id,user_id,action,amount_minor,reason,reference) VALUES (?,?,?,?,?,?,?,?)").bind(randomUUID(),T,body.customerId,user,"credit_sale",creditMinor,"Venta a crédito",saleId))}
   await d.batch(stmts);
   return Response.json(
     {
@@ -340,13 +310,7 @@ export async function POST(req: Request) {
         payments,
         status: "completed",
         syncStatus: "synced",
-        change: Math.max(
-          0,
-          Number(body.received || moneyToMajor(totalMinor)) -
-            payments
-              .filter((p) => p.method === "cash")
-              .reduce((s, p) => s + p.amount, 0),
-        ),
+        change: (()=>{const cashDue=payments.filter(p=>p.method==="cash").reduce((s,p)=>s+p.amount,0);return cashDue?Math.max(0,Number(body.received||cashDue)-cashDue):0})(),
       },
     },
     { status: 201 },

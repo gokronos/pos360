@@ -69,7 +69,7 @@ export default function POS({
       registerName: string;
     } | null>(null),
     [customers, setCustomers] = useState<
-      { id: string; name: string; creditLimit: number; balance: number }[]
+      { id: string; name: string; creditLimit: number; balance: number; priceListId?: string; blocked?: number; overdue?: number }[]
     >([]),
     [customerId, setCustomerId] = useState(""),
     [discount, setDiscount] = useState("0"),
@@ -467,12 +467,12 @@ export default function POS({
             Cliente
             <select
               value={customerId}
-              onChange={(e) => setCustomerId(e.target.value)}
+              onChange={(e) => {const id=e.target.value,c=customers.find(x=>x.id===id);setCustomerId(id);if(c?.priceListId!==undefined)void selectPriceList(c.priceListId||"").catch(error=>notify(error instanceof Error?error.message:"No fue posible aplicar la lista del cliente"));}}
             >
               <option value="">Consumidor final</option>
               {customers.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.name}
+                  {c.name}{c.blocked?" · BLOQUEADO":c.overdue?" · CARTERA VENCIDA":""}
                 </option>
               ))}
             </select>

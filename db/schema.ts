@@ -90,6 +90,15 @@ export const customers = sqliteTable(
     email: text("email"),
     creditLimit: real("credit_limit").notNull().default(0),
     creditDays: integer("credit_days").notNull().default(0),
+    commercialName: text("commercial_name"),
+    priceListId: text("price_list_id"),
+    creditLimitMinor: integer("credit_limit_minor").notNull().default(0),
+    blocked: integer("blocked", { mode: "boolean" }).notNull().default(false),
+    blockReason: text("block_reason"),
+    consentEmail: integer("consent_email", { mode: "boolean" }).notNull().default(false),
+    consentSms: integer("consent_sms", { mode: "boolean" }).notNull().default(false),
+    consentWhatsapp: integer("consent_whatsapp", { mode: "boolean" }).notNull().default(false),
+    notes: text("notes"),
     active: integer("active", { mode: "boolean" }).notNull().default(true),
     createdAt: text("created_at")
       .notNull()
@@ -283,6 +292,9 @@ export const receivables = sqliteTable("receivables", {
   balance: real("balance").notNull(),
   dueDate: text("due_date").notNull(),
   status: text("status").notNull().default("pending"),
+  originalAmountMinor: integer("original_amount_minor").notNull().default(0),
+  balanceMinor: integer("balance_minor").notNull().default(0),
+  branchId: text("branch_id"),
   createdAt: text("created_at")
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
@@ -300,12 +312,17 @@ export const customerPayments = sqliteTable("customer_payments", {
     .notNull()
     .references(() => appUsers.id),
   amount: real("amount").notNull(),
+  amountMinor: integer("amount_minor").notNull().default(0),
   method: text("method").notNull(),
   reference: text("reference"),
   createdAt: text("created_at")
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
 });
+export const customerAddresses=sqliteTable("customer_addresses",{id:text("id").primaryKey(),tenantId:text("tenant_id").notNull(),customerId:text("customer_id").notNull(),label:text("label").notNull(),address:text("address").notNull(),city:text("city").notNull(),state:text("state"),postalCode:text("postal_code"),country:text("country").notNull().default("CO"),isDefault:integer("is_default",{mode:"boolean"}).notNull().default(false),active:integer("active",{mode:"boolean"}).notNull().default(true)});
+export const creditAuthorizations=sqliteTable("credit_authorizations",{id:text("id").primaryKey(),tenantId:text("tenant_id").notNull(),customerId:text("customer_id").notNull(),requestedBy:text("requested_by").notNull(),authorizedBy:text("authorized_by").notNull(),amountMinor:integer("amount_minor").notNull(),reason:text("reason").notNull(),expiresAt:text("expires_at").notNull(),usedAt:text("used_at"),saleId:text("sale_id"),createdAt:text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`)});
+export const customerEvents=sqliteTable("customer_events",{id:text("id").primaryKey(),tenantId:text("tenant_id").notNull(),customerId:text("customer_id").notNull(),userId:text("user_id").notNull(),action:text("action").notNull(),amountMinor:integer("amount_minor").notNull().default(0),reason:text("reason").notNull(),reference:text("reference"),createdAt:text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`)});
+export const customerCredits=sqliteTable("customer_credits",{id:text("id").primaryKey(),tenantId:text("tenant_id").notNull(),customerId:text("customer_id").notNull(),saleId:text("sale_id").notNull(),amountMinor:integer("amount_minor").notNull(),balanceMinor:integer("balance_minor").notNull(),reason:text("reason").notNull(),createdAt:text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`)});
 export const suppliers = sqliteTable(
   "suppliers",
   {

@@ -90,9 +90,9 @@ export async function POST(req: Request) {
   if (!p.saleId)
     return Response.json({ error: "Venta requerida" }, { status: 400 });
   const sale = await d
-    .prepare("SELECT id,status,total,warehouse_id warehouseId FROM sales WHERE id=? AND tenant_id=?")
+    .prepare("SELECT id,status,total,warehouse_id warehouseId,customer_id customerId FROM sales WHERE id=? AND tenant_id=?")
     .bind(p.saleId, T)
-    .first<{ id: string; status: string; total: number; warehouseId:string|null }>();
+    .first<{ id: string; status: string; total: number; warehouseId:string|null;customerId:string|null }>();
   if (!sale)
     return Response.json({ error: "Venta no encontrada" }, { status: 404 });
   if (sale.status !== "completed")
@@ -153,6 +153,10 @@ export async function POST(req: Request) {
     if (l.trackInventory) {
       const movement=await inventoryMovement({tenantId:T,branchId:B,warehouseId,productId:l.productId,variantId:l.variantId,userId:user,movementType:p.action==="void"?"sale_void":"sale_return",quantity:l.quantity,reason:p.reason||"Reversión de venta",reference:number,sourceType:"sale_return",sourceId:returnId});stmts.push(...movement.statements);
     }
+  }
+  if(sale.customerId){
+    const receivable=await d.prepare("SELECT id,original_amount_minor originalMinor,balance_minor balanceMinor FROM receivables WHERE sale_id=? AND tenant_id=?").bind(sale.id,T).first<{id:string;originalMinor:number;balanceMinor:number}>();
+    if(receivable){const paid=receivable.originalMinor-receivable.balanceMinor;stmts.push(d.prepare("UPDATE receivables SET balance=0,balance_minor=0,status='cancelled' WHERE id=?").bind(receivable.id),d.prepare("INSERT INTO customer_events (id,tenant_id,customer_id,user_id,action,amount_minor,reason,reference) VALUES (?,?,?,?,?,?,?,?)").bind(randomUUID(),T,sale.customerId,user,"credit_sale_reversal",receivable.balanceMinor,p.reason||"Reversión de venta a crédito",number));if(paid>0)stmts.push(d.prepare("INSERT INTO customer_credits (id,tenant_id,customer_id,sale_id,amount_minor,balance_minor,reason) VALUES (?,?,?,?,?,?,?)").bind(randomUUID(),T,sale.customerId,sale.id,paid,paid,p.reason||"Saldo a favor por devolución"))}
   }
   await d.batch(stmts);
   return Response.json({ number, status, total: sale.total });
