@@ -27,9 +27,15 @@ export async function GET(req: Request) {
       .bind(user.branchId, user.tenantId)
       .first<{ id: string; name: string }>();
   const tenant = await d
-    .prepare("SELECT id,name FROM tenants WHERE id=?")
+    .prepare("SELECT id,name,country FROM tenants WHERE id=?")
     .bind(user.tenantId)
-    .first<{ id: string; name: string }>();
+    .first<{ id: string; name: string; country: string }>();
+  const configuration = await d
+    .prepare(
+      "SELECT nit,sector,currency,timezone,allow_negative_stock allowNegativeStock,receipt_format receiptFormat,onboarding_completed completed FROM business_settings WHERE tenant_id=?",
+    )
+    .bind(user.tenantId)
+    .first();
   return Response.json({
     tenant,
     branch,
@@ -40,6 +46,13 @@ export async function GET(req: Request) {
       role: user.role,
     },
     modules: user.modules,
+    configuration: configuration || {
+      completed: 0,
+      currency: "COP",
+      timezone: "America/Bogota",
+      receiptFormat: "thermal_80",
+      allowNegativeStock: 0,
+    },
     products: data.results,
     stats,
   });

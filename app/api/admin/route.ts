@@ -154,6 +154,11 @@ export async function POST(req: Request) {
           "INSERT INTO user_branch_access (id,tenant_id,user_id,branch_id) VALUES (?,?,?,?)",
         )
         .bind(randomUUID(), tenantId, userId, branchId),
+      d
+        .prepare(
+          "INSERT INTO business_settings (id,tenant_id,main_branch_id,onboarding_completed) VALUES (?,?,?,0)",
+        )
+        .bind(randomUUID(), tenantId, branchId),
     ];
     for (const [role, modules] of Object.entries(roleModules))
       for (const moduleName of modules)

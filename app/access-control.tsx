@@ -2,9 +2,18 @@
 import { useEffect, useState } from "react";
 export type Session = {
   user: { id: string; email: string; name: string; role: string };
-  tenant: { id: string; name: string };
+  tenant: { id: string; name: string; country: string };
   branch: { id: string; name: string };
   modules: string[];
+  configuration: {
+    completed: number;
+    nit?: string;
+    sector?: string;
+    currency: string;
+    timezone: string;
+    receiptFormat: string;
+    allowNegativeStock: number;
+  };
 };
 export function useAccess() {
   const [session, setSession] = useState<Session | null>(null);
@@ -24,6 +33,7 @@ export function useAccess() {
             tenant: d.tenant,
             branch: d.branch,
             modules: d.modules || [],
+            configuration: d.configuration,
           });
       })
       .catch((error) => console.error("No fue posible iniciar POS360", error));
@@ -33,6 +43,7 @@ export function useAccess() {
   }, []);
   return {
     session,
+    loading: session === null,
     can: (module: string) => !session || session.modules.includes(module),
   };
 }

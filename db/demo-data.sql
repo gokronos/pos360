@@ -10,6 +10,10 @@ INSERT OR IGNORE INTO branches (id,tenant_id,name) VALUES
 ('branch_norte','tenant_demo','Sede Norte'),
 ('branch_ferreteria','tenant_ferreteria','Sede Principal');
 
+INSERT OR IGNORE INTO tax_rates (id,tenant_id,name,rate,included_in_price,active) VALUES
+('tax_demo_iva','tenant_demo','IVA',19,1,1),
+('tax_ferreteria_iva','tenant_ferreteria','IVA',19,1,1);
+
 INSERT OR IGNORE INTO app_users (id,tenant_id,email,display_name,role,active) VALUES
 ('user_preview','tenant_demo','preview@pos360.local','Administrador local POS360','owner',1),
 ('user_admin','tenant_demo','admin@pos360.local','Administrador POS360','owner',1),
@@ -46,6 +50,10 @@ INSERT OR IGNORE INTO warehouses (id,tenant_id,branch_id,name,code,active) VALUE
 ('warehouse_main','tenant_demo','branch_centro','Bodega principal','BOD-01',1),
 ('warehouse_display','tenant_demo','branch_centro','Piso de venta','PISO-01',1),
 ('warehouse_north','tenant_demo','branch_norte','Bodega Norte','BOD-N01',1);
+
+INSERT OR IGNORE INTO business_settings (id,tenant_id,nit,sector,currency,timezone,allow_negative_stock,receipt_format,main_branch_id,main_warehouse_id,main_register_id,onboarding_completed,completed_at) VALUES
+('settings_demo','tenant_demo','901234567-1','retail','COP','America/Bogota',0,'thermal_80','branch_centro','warehouse_main','register_2',1,CURRENT_TIMESTAMP),
+('settings_ferreteria','tenant_ferreteria','900987654-2','hardware','COP','America/Bogota',0,'thermal_80','branch_ferreteria',NULL,NULL,1,CURRENT_TIMESTAMP);
 
 INSERT OR IGNORE INTO warehouse_stock (id,tenant_id,warehouse_id,product_id,quantity) VALUES
 ('ws_01','tenant_demo','warehouse_main','prod_arroz',60),

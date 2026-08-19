@@ -20,6 +20,12 @@ export async function POST(req: Request) {
     return Response.json({ error: "Venta incompleta" }, { status: 400 });
   const d = getRuntimeEnv().DB,
     user = access.user.id,
+    inventoryPolicy = await d
+      .prepare(
+        "SELECT allow_negative_stock allowNegativeStock FROM business_settings WHERE tenant_id=?",
+      )
+      .bind(T)
+      .first<{ allowNegativeStock: number }>(),
     session = await d
       .prepare(
         "SELECT id FROM cash_sessions WHERE tenant_id=? AND user_id=? AND status='open' ORDER BY opened_at DESC LIMIT 1",
@@ -57,7 +63,7 @@ export async function POST(req: Request) {
         { error: "Producto o cantidad inválida" },
         { status: 400 },
       );
-    if (p.stock < item.quantity)
+    if (!inventoryPolicy?.allowNegativeStock && p.stock < item.quantity)
       return Response.json({ error: "Stock insuficiente" }, { status: 409 });
     const lineTotal = p.price * item.quantity;
     subtotal += lineTotal;

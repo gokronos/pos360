@@ -772,3 +772,50 @@ export const productPresentations = sqliteTable("product_presentations", {
   salePrice: real("sale_price").notNull(),
   active: integer("active", { mode: "boolean" }).notNull().default(true),
 });
+export const businessSettings = sqliteTable(
+  "business_settings",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    nit: text("nit").notNull().default(""),
+    sector: text("sector").notNull().default("retail"),
+    currency: text("currency").notNull().default("COP"),
+    timezone: text("timezone").notNull().default("America/Bogota"),
+    allowNegativeStock: integer("allow_negative_stock", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    receiptFormat: text("receipt_format").notNull().default("thermal_80"),
+    mainBranchId: text("main_branch_id").references(() => branches.id),
+    mainWarehouseId: text("main_warehouse_id").references(() => warehouses.id),
+    mainRegisterId: text("main_register_id").references(() => cashRegisters.id),
+    onboardingCompleted: integer("onboarding_completed", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    completedAt: text("completed_at"),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [uniqueIndex("business_settings_tenant_uq").on(t.tenantId)],
+);
+export const taxRates = sqliteTable(
+  "tax_rates",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    name: text("name").notNull(),
+    rate: real("rate").notNull().default(0),
+    includedInPrice: integer("included_in_price", { mode: "boolean" })
+      .notNull()
+      .default(true),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [uniqueIndex("tax_rates_tenant_name_uq").on(t.tenantId, t.name)],
+);

@@ -2,10 +2,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { offlinePost } from "./offline-sync";
 import { apiJson, readJson } from "./api-client";
-const money = (n: number) =>
+const formatCurrency = (n: number, currency: string) =>
   new Intl.NumberFormat("es-CO", {
     style: "currency",
-    currency: "COP",
+    currency,
     maximumFractionDigits: 0,
   }).format(n || 0);
 type P = {
@@ -79,9 +79,29 @@ export default function POS({
       "Devolución solicitada por el cliente",
     ),
     [receipt, setReceipt] = useState<any>(null),
-    [busy, setBusy] = useState(false);
+    [busy, setBusy] = useState(false),
+    [business, setBusiness] = useState({
+      name: "POS360",
+      nit: "",
+      currency: "COP",
+      receiptFormat: "thermal_80",
+    });
+  const money = (value: number) => formatCurrency(value, business.currency);
   const load = async () => {
-    await apiJson("/api/bootstrap");
+    const bootstrap = await apiJson<{
+      tenant: { name: string };
+      configuration: {
+        nit?: string;
+        currency?: string;
+        receiptFormat?: string;
+      };
+    }>("/api/bootstrap");
+    setBusiness({
+      name: bootstrap.tenant.name,
+      nit: bootstrap.configuration.nit || "",
+      currency: bootstrap.configuration.currency || "COP",
+      receiptFormat: bootstrap.configuration.receiptFormat || "thermal_80",
+    });
     const [pd, cd, cud, ad] = await Promise.all([
       apiJson<{ products: (P & { active?: number })[] }>("/api/products"),
       apiJson<{ session: typeof cash }>("/api/cash"),
@@ -95,7 +115,11 @@ export default function POS({
     setSales(ad.sales || []);
   };
   useEffect(() => {
-    void load().catch((error) => notify(error instanceof Error ? error.message : "No fue posible cargar el POS"));
+    void load().catch((error) =>
+      notify(
+        error instanceof Error ? error.message : "No fue posible cargar el POS",
+      ),
+    );
   }, []);
   const filtered = products.filter((p) =>
       `${p.name} ${p.sku} ${p.barcode || ""}`
@@ -620,9 +644,10 @@ export default function POS({
                 </label>
               </div>
             ) : (
-              <div className="thermal-receipt">
+              <div className={`thermal-receipt ${business.receiptFormat}`}>
                 <h3>POS360</h3>
-                <p>Minimercado La Esquina</p>
+                <p>{business.name}</p>
+                {business.nit && <p>NIT {business.nit}</p>}
                 <hr />
                 <b>{receipt?.number}</b>
                 {receipt?.items?.map((x: any, i: number) => (

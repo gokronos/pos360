@@ -11,6 +11,7 @@ import { useAccess } from "./access-control";
 import POS from "./pos-advanced";
 import Inventory from "./inventory-advanced";
 import { readJson } from "./api-client";
+import BusinessSetupWizard from "./business-setup-wizard";
 type View =
   | "dashboard"
   | "pos"
@@ -109,7 +110,7 @@ const money = (n: number) =>
     maximumFractionDigits: 0,
   }).format(n);
 export default function Home() {
-  const { session, can } = useAccess();
+  const { session, can, loading } = useAccess();
   const [view, setView] = useState<View>("dashboard"),
     [collapsed, setCollapsed] = useState(false),
     [cart, setCart] = useState<{ id: number; qty: number }[]>([
@@ -138,6 +139,10 @@ export default function Home() {
       [cart],
     ),
     title = nav.find((n) => n.id === view)?.label;
+  if (loading)
+    return <main className="setup-loading">Preparando su empresa…</main>;
+  if (session && !session.configuration.completed)
+    return <BusinessSetupWizard session={session} />;
   return (
     <main className="app-shell">
       <aside className={collapsed ? "sidebar collapsed" : "sidebar"}>
