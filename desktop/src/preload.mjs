@@ -1,0 +1,2 @@
+import { contextBridge,ipcRenderer } from "electron";
+contextBridge.exposeInMainWorld("pos360",{configure:x=>ipcRenderer.invoke("pos:configure",x),pull:()=>ipcRenderer.invoke("pos:pull"),sync:()=>ipcRenderer.invoke("pos:sync"),find:code=>ipcRenderer.invoke("pos:find",code),sale:x=>ipcRenderer.invoke("pos:sale",x),stats:()=>ipcRenderer.invoke("pos:stats"),print:x=>ipcRenderer.invoke("pos:print",x),downloadUpdate:()=>ipcRenderer.invoke("update:download"),installUpdate:()=>ipcRenderer.invoke("update:install")});

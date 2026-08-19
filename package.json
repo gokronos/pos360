@@ -18,6 +18,9 @@
     "db:seed:local": "bash scripts/db-local.sh seed",
     "db:setup:local": "bash scripts/db-local.sh setup",
     "test:isolation": "bash scripts/test-tenant-isolation.sh"
+    ,"desktop:install": "npm --prefix desktop install"
+    ,"desktop:test": "npm --prefix desktop test"
+    ,"desktop:start": "npm --prefix desktop start"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",

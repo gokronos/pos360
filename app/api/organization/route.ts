@@ -43,13 +43,15 @@ export async function POST(req: Request) {
   const access = await requireAccess(req, "settings", "create");
   if (access.error) return access.error;
   const p = (await req.json()) as {
-    action?: "warehouse" | "register" | "terminal";
+    action?: "warehouse" | "register" | "terminal" | "desktopCredential";
     branchId?: string;
     registerId?: string;
     name?: string;
     code?: string;
+    terminalId?:string;
+    userId?:string;
   };
-  if (!p.action || !p.branchId || !p.name)
+  if (!p.action || !p.branchId || (p.action!=="desktopCredential"&&!p.name))
     return Response.json(
       { error: "Tipo, sede y nombre requeridos" },
       { status: 400 },
@@ -66,6 +68,15 @@ export async function POST(req: Request) {
       { status: 403 },
     );
   const id = randomUUID();
+  if(p.action==="desktopCredential"){
+    if(!["owner","admin"].includes(access.user.role))return Response.json({error:"Solo administración puede habilitar POS Windows"},{status:403});
+    if(!p.terminalId)return Response.json({error:"Terminal requerida"},{status:400});
+    const userId=p.userId||access.user.id,authorized=await d.prepare("SELECT t.id FROM terminals t JOIN app_users u ON u.id=? AND u.tenant_id=t.tenant_id JOIN terminal_user_access ta ON ta.terminal_id=t.id AND ta.user_id=u.id AND ta.active=1 LEFT JOIN user_branch_access a ON a.user_id=u.id AND a.branch_id=t.branch_id WHERE t.id=? AND t.tenant_id=? AND t.branch_id=? AND t.status='active' AND u.active=1 AND (a.id IS NOT NULL OR NOT EXISTS(SELECT 1 FROM user_branch_access x WHERE x.user_id=u.id))").bind(userId,p.terminalId,T,p.branchId).first();
+    if(!authorized)return Response.json({error:"Terminal o usuario no autorizado para la sede"},{status:403});
+    const token=`pos360_${randomUUID().replaceAll("-","")}${randomUUID().replaceAll("-","")}`,tokenHash=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(token)))).map(x=>x.toString(16).padStart(2,"0")).join("");
+    await d.prepare("INSERT INTO desktop_terminal_credentials(id,tenant_id,branch_id,terminal_id,user_id,token_hash,status,created_by) VALUES (?,?,?,?,?,?,'active',?) ON CONFLICT(terminal_id) DO UPDATE SET user_id=excluded.user_id,token_hash=excluded.token_hash,status='active',created_by=excluded.created_by,created_at=CURRENT_TIMESTAMP").bind(id,T,p.branchId,p.terminalId,userId,tokenHash,access.user.id).run();
+    return Response.json({terminalId:p.terminalId,token,warning:"Guarde este token ahora; no volverá a mostrarse"},{status:201});
+  }
   if (p.action === "warehouse") {
     if (!p.code)
       return Response.json(

@@ -1,0 +1,2 @@
+import { DatabaseSync } from "node:sqlite";
+const db=new DatabaseSync(process.argv[2]);db.exec("PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;BEGIN IMMEDIATE");db.prepare("UPDATE catalog SET stock=stock-7 WHERE id='p1'").run();db.prepare("INSERT INTO local_sales(id,operation_id,total_minor,status) VALUES ('partial','crash-operation',100,'pending_sync')").run();if(process.send)process.send("transaction-open");setInterval(()=>{},1000);

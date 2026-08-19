@@ -332,6 +332,12 @@ export const cashEvents = sqliteTable("cash_events", {
   reference: text("reference"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+export const desktopTerminalCredentials = sqliteTable("desktop_terminal_credentials", {
+  id: text("id").primaryKey(),tenantId:text("tenant_id").notNull().references(()=>tenants.id),branchId:text("branch_id").notNull().references(()=>branches.id),terminalId:text("terminal_id").notNull().references(()=>terminals.id),userId:text("user_id").notNull().references(()=>appUsers.id),tokenHash:text("token_hash").notNull(),status:text("status").notNull().default("active"),catalogVersion:integer("catalog_version").notNull().default(1),lastSyncAt:text("last_sync_at"),createdBy:text("created_by").notNull().references(()=>appUsers.id),createdAt:text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+export const desktopSyncOperations = sqliteTable("desktop_sync_operations", {
+  id:text("id").primaryKey(),tenantId:text("tenant_id").notNull().references(()=>tenants.id),terminalId:text("terminal_id").notNull().references(()=>terminals.id),operationId:text("operation_id").notNull(),entityType:text("entity_type").notNull(),serverEntityId:text("server_entity_id"),status:text("status").notNull(),payload:text("payload").notNull(),response:text("response"),attempts:integer("attempts").notNull().default(1),createdAt:text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),updatedAt:text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
 export const receivables = sqliteTable("receivables", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id")
