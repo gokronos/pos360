@@ -67,7 +67,16 @@ export default function POS({
       id: string;
       openingAmount: number;
       registerName: string;
+      terminalName?: string;
+      status?: string;
+      currentExpected?: number;
+      difference?: number;
     } | null>(null),
+    [cashMeta,setCashMeta]=useState<any>({terminals:[],movements:[],allowedMovements:[],pendingApprovals:[]}),
+    [terminalId,setTerminalId]=useState(""),
+    [cashMovement,setCashMovement]=useState({movementType:"income",amount:"",reason:"",reference:""}),
+    [countResult,setCountResult]=useState<any>(null),
+    [approvalReason,setApprovalReason]=useState("Diferencia verificada y aprobada"),
     [customers, setCustomers] = useState<
       { id: string; name: string; creditLimit: number; balance: number; priceListId?: string; blocked?: number; overdue?: number }[]
     >([]),
@@ -87,6 +96,9 @@ export default function POS({
       | "returns"
       | "receipt"
       | "close"
+      | "movement"
+      | "cash-history"
+      | "approvals"
       | null
     >(null),
     [base, setBase] = useState("100000"),
@@ -145,7 +157,7 @@ export default function POS({
         products: (P & { active?: number })[];
         priceLists: typeof priceLists;
       }>("/api/products"),
-      apiJson<{ session: typeof cash }>("/api/cash"),
+      apiJson<any>("/api/cash"),
       apiJson<{ customers: typeof customers }>("/api/customers"),
       apiJson<{ drafts: Draft[]; sales: Sale[] }>("/api/pos-advanced"),
     ]);
@@ -161,6 +173,8 @@ export default function POS({
       setProducts(sellableProducts(priced.products || []));
     } else setProducts(sellableProducts(initialProducts.products || []));
     setCash(cd.session || null);
+    setCashMeta(cd);
+    if(!terminalId)setTerminalId(cd.terminals?.[0]?.id||"");
     setCustomers(cud.customers || []);
     setDrafts(ad.drafts || []);
     setSales(ad.sales || []);
@@ -222,7 +236,7 @@ export default function POS({
     const r = await fetch("/api/cash", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "open", amount: Number(base) }),
+        body: JSON.stringify({ action: "open", terminalId, amount: Number(base) }),
       }),
       d = await readJson<any>(r);
     if (!r.ok) return notify(d.error);
@@ -230,18 +244,21 @@ export default function POS({
     setModal(null);
     notify("Caja abierta");
   };
-  const close = async () => {
-    const r = await fetch("/api/cash", {
+  const countAndClose = async () => {
+    const countResponse = await fetch("/api/cash", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "close", amount: Number(declared) }),
+        body: JSON.stringify({ action: "count", amount: declared, notes: "Arqueo realizado por el cajero" }),
       }),
-      d = await readJson<any>(r);
-    if (!r.ok) return notify(d.error);
-    setCash(null);
-    setModal(null);
-    notify(`Caja cerrada. Diferencia ${money(d.difference)}`);
+      countData = await readJson<any>(countResponse);
+    if (!countResponse.ok) return notify(countData.error);
+    setCountResult(countData.count);
+    const closeResponse=await fetch("/api/cash",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"close"})}),closeData=await readJson<any>(closeResponse);
+    if(!closeResponse.ok)return notify(closeData.error);
+    setModal(null);notify(closeData.pendingApproval?`Diferencia ${money(closeData.difference)} pendiente de aprobación`:"Caja cerrada sin diferencias");await load();
   };
+  const saveCashMovement=async()=>{const r=await fetch("/api/cash",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"movement",...cashMovement,amount:cashMovement.amount})}),d=await readJson<any>(r);if(!r.ok)return notify(d.error);setModal(null);notify("Movimiento de caja registrado");await load()};
+  const approveDifference=async(sessionId:string)=>{const r=await fetch("/api/cash",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"approve",sessionId,reason:approvalReason})}),d=await readJson<any>(r);if(!r.ok)return notify(d.error);notify("Diferencia aprobada y caja cerrada");await load()};
   const sell = async () => {
     setBusy(true);
     const normalized = payments.map((p) => ({
@@ -362,11 +379,11 @@ export default function POS({
       <div className="cash-bar advanced">
         <div>
           <span className={cash ? "online-dot" : "cash-dot"} />
-          <b>{cash ? `${cash.registerName} abierta` : "Caja cerrada"}</b>
+          <b>{cash ? `${cash.registerName} · ${cash.terminalName||"Terminal"}` : "Caja cerrada"}</b>
           <small>
             {cash
-              ? `Base ${money(cash.openingAmount)}`
-              : "Debe abrir caja para vender"}
+              ? cash.status==="pending_approval"?`Diferencia ${money(cash.difference||0)} pendiente de supervisor`:`Base ${money(cash.openingAmount)}`
+              : "Seleccione terminal y abra caja para vender"}
           </small>
         </div>
         <div className="pos-toolbar">
@@ -394,8 +411,17 @@ export default function POS({
             Pendientes <b>{drafts.length}</b>
           </button>
           <button onClick={() => setModal("returns")}>Devoluciones</button>
-          <button onClick={() => (cash ? setModal("close") : setModal("cash"))}>
-            {cash ? "Cerrar caja" : "Abrir caja"}
+          {cash?.status==="open"&&<button onClick={()=>{setCashMovement({movementType:cashMeta.allowedMovements?.[0]||"income",amount:"",reason:"",reference:""});setModal("movement")}}>Movimiento de caja</button>}
+          {cash&&<button onClick={()=>setModal("cash-history")}>Movimientos</button>}
+          {(cashMeta.pendingApprovals||[]).length>0&&<button onClick={()=>setModal("approvals")}>Aprobar diferencias <b>{cashMeta.pendingApprovals.length}</b></button>}
+          <button
+            onClick={() => {
+              if (!cash) return setModal("cash");
+              if (cash.status === "open") return setModal("close");
+              return notify("La caja está pendiente de aprobación del supervisor");
+            }}
+          >
+            {cash ? cash.status==="open"?"Arqueo y cierre":"Cierre pendiente" : "Abrir caja"}
           </button>
         </div>
       </div>
@@ -564,6 +590,12 @@ export default function POS({
                     ? "Abrir caja"
                     : modal === "close"
                       ? "Arqueo y cierre"
+                      : modal === "movement"
+                        ? "Movimiento de caja"
+                        : modal === "cash-history"
+                          ? "Movimientos permitidos"
+                          : modal === "approvals"
+                            ? "Aprobar diferencias"
                       : modal === "pay"
                         ? "Pago combinado"
                         : modal === "drafts"
@@ -584,6 +616,7 @@ export default function POS({
             </div>
             {modal === "cash" ? (
               <div className="payment-body">
+                <label>Terminal autorizada<select value={terminalId} onChange={e=>setTerminalId(e.target.value)}><option value="">Seleccione terminal</option>{(cashMeta.terminals||[]).map((t:any)=><option key={t.id} value={t.id}>{t.name} · {t.registerName} · {t.code}</option>)}</select></label>
                 <label>
                   Base inicial
                   <input
@@ -604,10 +637,13 @@ export default function POS({
                   />
                 </label>
                 <div className="success-box">
-                  El cierre calculará automáticamente el valor esperado y la
-                  diferencia.
+                  El arqueo calculará el esperado y la diferencia. Una diferencia requiere aprobación de otro supervisor.
                 </div>
+                {countResult&&<div className="receipt-total"><span>Diferencia</span><b>{money(countResult.difference)}</b></div>}
               </div>
+            ) : modal === "movement" ? (<div className="payment-body"><label>Tipo<select value={cashMovement.movementType} onChange={e=>setCashMovement({...cashMovement,movementType:e.target.value})}>{(cashMeta.allowedMovements||[]).map((x:string)=><option key={x} value={x}>{x==="income"?"Ingreso":x==="expense"?"Egreso":"Retiro"}</option>)}</select></label><label>Valor<input type="number" min="0.01" step="0.01" value={cashMovement.amount} onChange={e=>setCashMovement({...cashMovement,amount:e.target.value})}/></label><label>Motivo obligatorio<input value={cashMovement.reason} onChange={e=>setCashMovement({...cashMovement,reason:e.target.value})}/></label><label>Referencia<input value={cashMovement.reference} onChange={e=>setCashMovement({...cashMovement,reference:e.target.value})}/></label></div>
+            ) : modal === "cash-history" ? (<div className="modal-list">{(cashMeta.movements||[]).map((m:any)=><div className="draft-row" key={m.id}><div><b>{m.movementType} · {m.userName}</b><small>{m.reason} · {new Date(m.createdAt).toLocaleString("es-CO")}</small></div><strong>{money(m.amount)}</strong></div>)}{!(cashMeta.movements||[]).length&&<div className="success-box">No hay movimientos.</div>}</div>
+            ) : modal === "approvals" ? (<div className="payment-body"><label>Justificación de aprobación<input value={approvalReason} onChange={e=>setApprovalReason(e.target.value)}/></label>{(cashMeta.pendingApprovals||[]).map((s:any)=><div className="draft-row" key={s.id}><div><b>{s.cashierName} · {s.terminalName}</b><small>Esperado {money(s.expectedAmount)} · declarado {money(s.closingAmount)}</small></div><strong className="debt">{money(s.difference)}</strong><button className="table-action" onClick={()=>approveDifference(s.id)}>Aprobar y cerrar</button></div>)}</div>
             ) : modal === "pay" ? (
               <div className="payment-body">
                 <div className="receipt-total">
@@ -793,10 +829,11 @@ export default function POS({
                 </button>
               )}
               {modal === "close" && (
-                <button className="primary" onClick={close}>
-                  Cerrar y generar arqueo
+                <button className="primary" onClick={countAndClose}>
+                  Realizar arqueo y solicitar cierre
                 </button>
               )}
+              {modal === "movement"&&<button className="primary" onClick={saveCashMovement}>Registrar movimiento</button>}
               {modal === "pay" && (
                 <button
                   className="primary"

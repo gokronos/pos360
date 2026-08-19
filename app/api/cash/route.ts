@@ -1,116 +1,39 @@
 import { randomUUID } from "node:crypto";
-import { getRuntimeEnv } from "../../../db/runtime-env";
 import { requireAccess } from "../../../db/authz";
-export async function GET(req: Request) {
-  const access = await requireAccess(req, "pos");
-  if (access.error) return access.error;
-  const d = getRuntimeEnv().DB,
-    user = access.user.id,
-    T = access.user.tenantId;
-  const session = await d
-    .prepare(
-      "SELECT s.id,s.opening_amount openingAmount,s.status,s.opened_at openedAt,r.name registerName,COALESCE((SELECT SUM(amount) FROM cash_movements WHERE session_id=s.id),0) movements FROM cash_sessions s JOIN cash_registers r ON r.id=s.register_id WHERE s.tenant_id=? AND s.user_id=? AND s.status='open' ORDER BY s.opened_at DESC LIMIT 1",
-    )
-    .bind(T, user)
-    .first();
-  return Response.json({ session });
+import { moneyToMajor, parseMoney } from "../../../db/money";
+import { getRuntimeEnv } from "../../../db/runtime-env";
+
+const cashEvent=(d:ReturnType<typeof getRuntimeEnv>["DB"],x:{tenantId:string;sessionId:string;userId:string;action:string;reason:string;amountMinor?:number;reference?:string})=>d.prepare("INSERT INTO cash_events (id,tenant_id,session_id,user_id,action,amount_minor,reason,reference) VALUES (?,?,?,?,?,?,?,?)").bind(randomUUID(),x.tenantId,x.sessionId,x.userId,x.action,x.amountMinor||0,x.reason,x.reference||null);
+const sessionSelect="SELECT s.id,s.status,s.opening_amount_minor/100.0 openingAmount,s.closing_amount_minor/100.0 closingAmount,s.expected_amount_minor/100.0 expectedAmount,s.difference_minor/100.0 difference,s.approval_status approvalStatus,s.opened_at openedAt,s.closed_at closedAt,r.id registerId,r.name registerName,t.id terminalId,t.name terminalName,t.code terminalCode,u.display_name cashierName,COALESCE((SELECT SUM(amount_minor) FROM cash_movements m WHERE m.session_id=s.id AND m.affects_cash=1),0)/100.0 currentExpected FROM cash_sessions s JOIN cash_registers r ON r.id=s.register_id JOIN terminals t ON t.id=s.terminal_id JOIN app_users u ON u.id=s.user_id";
+
+export async function GET(req:Request){
+  const access=await requireAccess(req,"pos");if(access.error)return access.error;const d=getRuntimeEnv().DB,T=access.user.tenantId,B=access.user.branchId,user=access.user.id,url=new URL(req.url),sessionId=url.searchParams.get("sessionId");
+  const terminals=await d.prepare("SELECT t.id,t.name,t.code,t.register_id registerId,r.name registerName,t.status FROM terminals t JOIN cash_registers r ON r.id=t.register_id JOIN terminal_user_access a ON a.terminal_id=t.id AND a.user_id=? AND a.active=1 WHERE t.tenant_id=? AND t.branch_id=? AND t.status='active' AND r.active=1 ORDER BY t.name").bind(user,T,B).all();
+  const session=sessionId?await d.prepare(`${sessionSelect} WHERE s.id=? AND s.tenant_id=? AND s.branch_id=?`).bind(sessionId,T,B).first():await d.prepare(`${sessionSelect} WHERE s.tenant_id=? AND s.user_id=? AND s.status IN ('open','counted','pending_approval') ORDER BY s.opened_at DESC LIMIT 1`).bind(T,user).first();
+  let movements:{results:unknown[]}={results:[]},counts:{results:unknown[]}={results:[]},events:{results:unknown[]}={results:[]};if(session&&typeof session==="object"&&"id" in session){const id=String(session.id);[movements,counts,events]=await Promise.all([d.prepare("SELECT m.id,m.movement_type movementType,m.amount_minor/100.0 amount,m.reason,m.reference,m.created_at createdAt,u.display_name userName FROM cash_movements m JOIN app_users u ON u.id=m.user_id WHERE m.session_id=? AND m.affects_cash=1 ORDER BY m.created_at DESC,m.rowid DESC").bind(id).all(),d.prepare("SELECT c.id,c.declared_amount_minor/100.0 declared,c.expected_amount_minor/100.0 expected,c.difference_minor/100.0 difference,c.denominations,c.notes,c.created_at createdAt,u.display_name userName FROM cash_counts c JOIN app_users u ON u.id=c.user_id WHERE c.session_id=?").bind(id).all(),d.prepare("SELECT e.id,e.action,e.amount_minor/100.0 amount,e.reason,e.reference,e.created_at createdAt,u.display_name userName FROM cash_events e JOIN app_users u ON u.id=e.user_id WHERE e.session_id=? ORDER BY e.created_at,e.rowid").bind(id).all()])}
+  const allowedMovements=["income","expense",...(["owner","admin","supervisor"].includes(access.user.role)?["withdrawal"]:[])],pendingApprovals=["owner","admin","supervisor"].includes(access.user.role)?await d.prepare(`${sessionSelect} WHERE s.tenant_id=? AND s.branch_id=? AND s.status='pending_approval' AND s.user_id<>? ORDER BY s.opened_at`).bind(T,B,user).all():{results:[]};return Response.json({terminals:terminals.results,session,movements:movements.results,counts:counts.results,events:events.results,allowedMovements,pendingApprovals:pendingApprovals.results});
 }
-export async function POST(req: Request) {
-  const access = await requireAccess(req, "pos", "create");
-  if (access.error) return access.error;
-  const p = (await req.json()) as {
-      action?: "open" | "close";
-      amount?: number;
-    },
-    d = getRuntimeEnv().DB,
-    user = access.user.id,
-    T = access.user.tenantId;
-  const register = await d
-    .prepare(
-      "SELECT id,name FROM cash_registers WHERE tenant_id=? AND branch_id=? AND active=1 ORDER BY name LIMIT 1",
-    )
-    .bind(T, access.user.branchId)
-    .first<{ id: string; name: string }>();
-  if (!register)
-    return Response.json(
-      { error: "Configure una caja activa para esta sede" },
-      { status: 409 },
-    );
-  if (p.action === "open") {
-    const current = await d
-      .prepare(
-        "SELECT id FROM cash_sessions WHERE tenant_id=? AND user_id=? AND status='open'",
-      )
-      .bind(T, user)
-      .first();
-    if (current)
-      return Response.json(
-        { error: "Ya existe una caja abierta" },
-        { status: 409 },
-      );
-    const id = randomUUID(),
-      amount = Number(p.amount || 0);
-    await d.batch([
-      d
-        .prepare(
-          "INSERT INTO cash_sessions (id,tenant_id,register_id,user_id,opening_amount,status) VALUES (?,?,?,?,?,'open')",
-        )
-        .bind(id, T, register.id, user, amount),
-      d
-        .prepare(
-          "INSERT INTO cash_movements (id,tenant_id,session_id,user_id,movement_type,amount,reason,reference) VALUES (?,?,?,?,?,?,?,?)",
-        )
-        .bind(
-          randomUUID(),
-          T,
-          id,
-          user,
-          "opening",
-          amount,
-          "Base inicial",
-          `AP-${Date.now()}`,
-        ),
-    ]);
-    return Response.json(
-      {
-        session: {
-          id,
-          openingAmount: amount,
-          status: "open",
-          registerName: register.name,
-        },
-      },
-      { status: 201 },
-    );
-  }
-  if (p.action === "close") {
-    const s = await d
-      .prepare(
-        "SELECT id,opening_amount FROM cash_sessions WHERE tenant_id=? AND user_id=? AND status='open'",
-      )
-      .bind(T, user)
-      .first<{ id: string; opening_amount: number }>();
-    if (!s)
-      return Response.json({ error: "No hay caja abierta" }, { status: 404 });
-    const totals = await d
-        .prepare(
-          "SELECT COALESCE(SUM(amount),0) total FROM cash_movements WHERE session_id=?",
-        )
-        .bind(s.id)
-        .first<{ total: number }>(),
-      declared = Number(p.amount || 0);
-    await d
-      .prepare(
-        "UPDATE cash_sessions SET status='closed',closing_amount=?,expected_amount=?,closed_at=CURRENT_TIMESTAMP WHERE id=?",
-      )
-      .bind(declared, totals?.total || 0, s.id)
-      .run();
-    return Response.json({
-      closed: true,
-      declared,
-      expected: totals?.total || 0,
-      difference: declared - (totals?.total || 0),
-    });
-  }
-  return Response.json({ error: "Acción inválida" }, { status: 400 });
+
+type Input={action?:"open"|"movement"|"count"|"close"|"approve";terminalId?:string;sessionId?:string;movementType?:"income"|"expense"|"withdrawal";amount?:number|string;reason?:string;reference?:string;denominations?:Record<string,number>;notes?:string;approved?:boolean};
+export async function POST(req:Request){
+  const access=await requireAccess(req,"pos","create");if(access.error)return access.error;const p=(await req.json()) as Input,d=getRuntimeEnv().DB,T=access.user.tenantId,B=access.user.branchId,user=access.user.id;
+  try{
+    if(p.action==="open"){
+      if(!p.terminalId)return Response.json({error:"Seleccione una terminal autorizada"},{status:400});const terminal=await d.prepare("SELECT t.id,t.register_id registerId,r.name registerName,t.name terminalName FROM terminals t JOIN cash_registers r ON r.id=t.register_id JOIN terminal_user_access a ON a.terminal_id=t.id AND a.user_id=? AND a.active=1 WHERE t.id=? AND t.tenant_id=? AND t.branch_id=? AND t.status='active' AND r.active=1").bind(user,p.terminalId,T,B).first<{id:string;registerId:string;registerName:string;terminalName:string}>();if(!terminal)return Response.json({error:"La terminal no está autorizada para este cajero y sede"},{status:403});let amountMinor:number;try{amountMinor=parseMoney(p.amount||0)}catch(error){return Response.json({error:error instanceof Error?error.message:"Base inválida"},{status:400})}if(amountMinor<0)return Response.json({error:"La base inicial no puede ser negativa"},{status:400});const id=randomUUID(),reference=`AP-${Date.now()}`;await d.batch([d.prepare("INSERT INTO cash_sessions (id,tenant_id,branch_id,terminal_id,register_id,user_id,opening_amount,opening_amount_minor,status) VALUES (?,?,?,?,?,?,?,?,'open')").bind(id,T,B,terminal.id,terminal.registerId,user,moneyToMajor(amountMinor),amountMinor),d.prepare("INSERT INTO cash_movements (id,tenant_id,session_id,user_id,movement_type,amount,amount_minor,affects_cash,reason,reference) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(randomUUID(),T,id,user,"opening",moneyToMajor(amountMinor),amountMinor,1,"Base inicial",reference),cashEvent(d,{tenantId:T,sessionId:id,userId:user,action:"open",amountMinor,reason:"Apertura de caja",reference})]);return Response.json({session:{id,status:"open",openingAmount:moneyToMajor(amountMinor),registerName:terminal.registerName,terminalName:terminal.terminalName,terminalId:terminal.id}},{status:201});
+    }
+    const session=await d.prepare("SELECT id,user_id userId,status,register_id registerId,terminal_id terminalId FROM cash_sessions WHERE id=COALESCE(?,id) AND tenant_id=? AND branch_id=? AND status IN ('open','counted','pending_approval') AND (? IS NOT NULL OR user_id=?) ORDER BY opened_at DESC LIMIT 1").bind(p.sessionId||null,T,B,p.sessionId||null,user).first<{id:string;userId:string;status:string;registerId:string;terminalId:string}>();if(!session)return Response.json({error:"No hay una sesión de caja activa"},{status:404});
+    if(p.action==="movement"){
+      if(session.userId!==user)return Response.json({error:"Solo el cajero de la sesión puede registrar movimientos"},{status:403});if(session.status!=="open")return Response.json({error:"La caja ya fue arqueada"},{status:409});if(!p.movementType||!["income","expense","withdrawal"].includes(p.movementType))return Response.json({error:"Tipo de movimiento no permitido"},{status:400});if(p.movementType==="withdrawal"&&!["owner","admin","supervisor"].includes(access.user.role))return Response.json({error:"Los retiros requieren supervisor o administrador"},{status:403});if(!p.reason?.trim())return Response.json({error:"El motivo es obligatorio"},{status:400});let amountMinor:number;try{amountMinor=parseMoney(p.amount||0)}catch(error){return Response.json({error:error instanceof Error?error.message:"Valor inválido"},{status:400})}if(amountMinor<=0)return Response.json({error:"El valor debe ser mayor que cero"},{status:400});const signed=["expense","withdrawal"].includes(p.movementType)?-amountMinor:amountMinor,reference=p.reference?.trim()||`MC-${Date.now()}`;await d.batch([d.prepare("INSERT INTO cash_movements (id,tenant_id,session_id,user_id,movement_type,amount,amount_minor,affects_cash,reason,reference) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(randomUUID(),T,session.id,user,p.movementType,moneyToMajor(signed),signed,1,p.reason.trim(),reference),cashEvent(d,{tenantId:T,sessionId:session.id,userId:user,action:p.movementType,amountMinor:signed,reason:p.reason,reference})]);return Response.json({movement:{type:p.movementType,amount:moneyToMajor(signed),reference}});
+    }
+    if(p.action==="count"){
+      if(session.userId!==user)return Response.json({error:"Solo el cajero puede realizar su arqueo"},{status:403});if(session.status!=="open")return Response.json({error:"La sesión ya tiene arqueo"},{status:409});let declaredMinor:number;try{declaredMinor=parseMoney(p.amount||0)}catch{return Response.json({error:"Valor contado inválido"},{status:400})}if(declaredMinor<0)return Response.json({error:"El valor contado no puede ser negativo"},{status:400});const total=await d.prepare("SELECT COALESCE(SUM(amount_minor),0) totalMinor FROM cash_movements WHERE session_id=? AND affects_cash=1").bind(session.id).first<{totalMinor:number}>(),expected=Number(total?.totalMinor||0),difference=declaredMinor-expected,id=randomUUID();await d.batch([d.prepare("INSERT INTO cash_counts (id,tenant_id,session_id,user_id,declared_amount_minor,expected_amount_minor,difference_minor,denominations,notes) VALUES (?,?,?,?,?,?,?,?,?)").bind(id,T,session.id,user,declaredMinor,expected,difference,JSON.stringify(p.denominations||{}),p.notes?.trim()||null),d.prepare("UPDATE cash_sessions SET status='counted',closing_amount=?,closing_amount_minor=?,expected_amount=?,expected_amount_minor=?,difference_minor=?,count_id=? WHERE id=?").bind(moneyToMajor(declaredMinor),declaredMinor,moneyToMajor(expected),expected,difference,id,session.id),cashEvent(d,{tenantId:T,sessionId:session.id,userId:user,action:"count",amountMinor:difference,reason:p.notes?.trim()||"Arqueo de caja",reference:id})]);return Response.json({count:{id,declared:moneyToMajor(declaredMinor),expected:moneyToMajor(expected),difference:moneyToMajor(difference)}});
+    }
+    if(p.action==="close"){
+      if(session.userId!==user)return Response.json({error:"Solo el cajero puede solicitar el cierre"},{status:403});if(session.status!=="counted")return Response.json({error:"Debe realizar el arqueo antes de cerrar"},{status:409});const row=await d.prepare("SELECT difference_minor differenceMinor FROM cash_sessions WHERE id=?").bind(session.id).first<{differenceMinor:number}>(),difference=Number(row?.differenceMinor||0),needsApproval=difference!==0,next=needsApproval?"pending_approval":"closed";await d.batch([d.prepare("UPDATE cash_sessions SET status=?,approval_status=?,closed_at=CASE WHEN ?='closed' THEN CURRENT_TIMESTAMP ELSE NULL END WHERE id=?").bind(next,needsApproval?"pending":"not_required",next,session.id),cashEvent(d,{tenantId:T,sessionId:session.id,userId:user,action:"close_requested",amountMinor:difference,reason:needsApproval?"Cierre con diferencia pendiente de aprobación":"Cierre sin diferencias"})]);return Response.json({closed:!needsApproval,pendingApproval:needsApproval,difference:moneyToMajor(difference),status:next});
+    }
+    if(p.action==="approve"){
+      if(!["owner","admin","supervisor"].includes(access.user.role))return Response.json({error:"La diferencia requiere aprobación de supervisor"},{status:403});if(session.userId===user)return Response.json({error:"El cajero no puede aprobar su propia diferencia"},{status:403});if(session.status!=="pending_approval")return Response.json({error:"La sesión no está pendiente de aprobación"},{status:409});if(!p.reason?.trim())return Response.json({error:"El motivo de aprobación es obligatorio"},{status:400});await d.batch([d.prepare("UPDATE cash_sessions SET status='closed',approval_status='approved',approved_by=?,approved_at=CURRENT_TIMESTAMP,approval_reason=?,closed_at=CURRENT_TIMESTAMP WHERE id=?").bind(user,p.reason.trim(),session.id),cashEvent(d,{tenantId:T,sessionId:session.id,userId:user,action:"difference_approved",reason:p.reason})]);return Response.json({closed:true,approved:true});
+    }
+    return Response.json({error:"Acción inválida"},{status:400});
+  }catch(error){return Response.json({error:error instanceof Error&&error.message.includes("UNIQUE")?"La caja, terminal o cajero ya tiene una sesión activa":error instanceof Error?error.message:"No fue posible procesar la caja"},{status:409})}
 }

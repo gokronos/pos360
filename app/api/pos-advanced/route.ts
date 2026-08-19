@@ -16,7 +16,7 @@ export async function GET(req: Request) {
         .all(),
       d
         .prepare(
-          "SELECT s.id,s.local_id localId,s.total,s.status,s.created_at createdAt,COALESCE(c.name,'Consumidor final') customerName FROM sales s LEFT JOIN customers c ON c.id=s.customer_id WHERE s.tenant_id=? ORDER BY s.created_at DESC LIMIT 20",
+          "SELECT s.id,s.local_id localId,s.total,s.status,s.terminal_id terminalId,s.register_id registerId,s.cash_session_id cashSessionId,s.user_id cashierId,s.created_at createdAt,COALESCE(c.name,'Consumidor final') customerName FROM sales s LEFT JOIN customers c ON c.id=s.customer_id WHERE s.tenant_id=? ORDER BY s.created_at DESC LIMIT 20",
         )
         .bind(T)
         .all(),
@@ -90,9 +90,9 @@ export async function POST(req: Request) {
   if (!p.saleId)
     return Response.json({ error: "Venta requerida" }, { status: 400 });
   const sale = await d
-    .prepare("SELECT id,status,total,warehouse_id warehouseId,customer_id customerId FROM sales WHERE id=? AND tenant_id=?")
+    .prepare("SELECT id,status,total,warehouse_id warehouseId,customer_id customerId,cash_session_id cashSessionId FROM sales WHERE id=? AND tenant_id=?")
     .bind(p.saleId, T)
-    .first<{ id: string; status: string; total: number; warehouseId:string|null;customerId:string|null }>();
+    .first<{ id: string; status: string; total: number; warehouseId:string|null;customerId:string|null;cashSessionId:string|null }>();
   if (!sale)
     return Response.json({ error: "Venta no encontrada" }, { status: 404 });
   if (sale.status !== "completed")
@@ -158,6 +158,7 @@ export async function POST(req: Request) {
     const receivable=await d.prepare("SELECT id,original_amount_minor originalMinor,balance_minor balanceMinor FROM receivables WHERE sale_id=? AND tenant_id=?").bind(sale.id,T).first<{id:string;originalMinor:number;balanceMinor:number}>();
     if(receivable){const paid=receivable.originalMinor-receivable.balanceMinor;stmts.push(d.prepare("UPDATE receivables SET balance=0,balance_minor=0,status='cancelled' WHERE id=?").bind(receivable.id),d.prepare("INSERT INTO customer_events (id,tenant_id,customer_id,user_id,action,amount_minor,reason,reference) VALUES (?,?,?,?,?,?,?,?)").bind(randomUUID(),T,sale.customerId,user,"credit_sale_reversal",receivable.balanceMinor,p.reason||"Reversión de venta a crédito",number));if(paid>0)stmts.push(d.prepare("INSERT INTO customer_credits (id,tenant_id,customer_id,sale_id,amount_minor,balance_minor,reason) VALUES (?,?,?,?,?,?,?)").bind(randomUUID(),T,sale.customerId,sale.id,paid,paid,p.reason||"Saldo a favor por devolución"))}
   }
+  if(sale.cashSessionId){const cash=await d.prepare("SELECT COALESCE(SUM(amount_minor),0) amountMinor FROM sale_payments WHERE sale_id=? AND method='cash'").bind(sale.id).first<{amountMinor:number}>();if(Number(cash?.amountMinor)>0)stmts.push(d.prepare("INSERT INTO cash_movements (id,tenant_id,session_id,user_id,movement_type,amount,amount_minor,affects_cash,reason,reference) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(randomUUID(),T,sale.cashSessionId,user,"sale_return_cash",-Number(cash!.amountMinor)/100,-Number(cash!.amountMinor),1,p.reason||"Devolución en efectivo",number))}
   await d.batch(stmts);
   return Response.json({ number, status, total: sale.total });
 }

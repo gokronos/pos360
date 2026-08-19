@@ -104,12 +104,18 @@ export async function POST(req: Request) {
           { status: 403 },
         );
     }
-    await d
-      .prepare(
-        "INSERT INTO terminals (id,tenant_id,branch_id,register_id,name,code,status) VALUES (?,?,?,?,?,?,'active')",
-      )
-      .bind(id, T, p.branchId, p.registerId || null, p.name, p.code)
-      .run();
+    await d.batch([
+      d
+        .prepare(
+          "INSERT INTO terminals (id,tenant_id,branch_id,register_id,name,code,status) VALUES (?,?,?,?,?,?,'active')",
+        )
+        .bind(id, T, p.branchId, p.registerId || null, p.name, p.code),
+      d
+        .prepare(
+          "INSERT OR IGNORE INTO terminal_user_access (id,tenant_id,terminal_id,user_id,active,granted_by) SELECT lower(hex(randomblob(16))),?,?,u.id,1,? FROM app_users u JOIN user_branch_access a ON a.user_id=u.id AND a.branch_id=? WHERE u.tenant_id=? AND u.active=1",
+        )
+        .bind(T, id, access.user.id, p.branchId, T),
+    ]);
   }
   await d
     .prepare(

@@ -121,6 +121,9 @@ export const sales = sqliteTable(
     branchId: text("branch_id")
       .notNull()
       .references(() => branches.id),
+    terminalId: text("terminal_id").references(() => terminals.id),
+    registerId: text("register_id").references(() => cashRegisters.id),
+    cashSessionId: text("cash_session_id").references(() => cashSessions.id),
     userId: text("user_id")
       .notNull()
       .references(() => appUsers.id),
@@ -236,12 +239,23 @@ export const cashSessions = sqliteTable("cash_sessions", {
   registerId: text("register_id")
     .notNull()
     .references(() => cashRegisters.id),
+  branchId: text("branch_id").references(() => branches.id),
+  terminalId: text("terminal_id").references(() => terminals.id),
   userId: text("user_id")
     .notNull()
     .references(() => appUsers.id),
   openingAmount: real("opening_amount").notNull(),
+  openingAmountMinor: integer("opening_amount_minor").notNull().default(0),
   closingAmount: real("closing_amount"),
+  closingAmountMinor: integer("closing_amount_minor"),
   expectedAmount: real("expected_amount"),
+  expectedAmountMinor: integer("expected_amount_minor"),
+  differenceMinor: integer("difference_minor"),
+  countId: text("count_id"),
+  approvalStatus: text("approval_status").notNull().default("not_required"),
+  approvedBy: text("approved_by").references(() => appUsers.id),
+  approvedAt: text("approved_at"),
+  approvalReason: text("approval_reason"),
   status: text("status").notNull().default("open"),
   openedAt: text("opened_at")
     .notNull()
@@ -271,11 +285,52 @@ export const cashMovements = sqliteTable("cash_movements", {
     .references(() => appUsers.id),
   movementType: text("movement_type").notNull(),
   amount: real("amount").notNull(),
+  amountMinor: integer("amount_minor").notNull().default(0),
+  affectsCash: integer("affects_cash", { mode: "boolean" })
+    .notNull()
+    .default(true),
+  approvedBy: text("approved_by").references(() => appUsers.id),
   reason: text("reason").notNull(),
   reference: text("reference"),
   createdAt: text("created_at")
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
+});
+export const terminalUserAccess = sqliteTable(
+  "terminal_user_access",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().references(() => tenants.id),
+    terminalId: text("terminal_id").notNull().references(() => terminals.id),
+    userId: text("user_id").notNull().references(() => appUsers.id),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    grantedBy: text("granted_by").references(() => appUsers.id),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [uniqueIndex("terminal_user_access_uq").on(t.terminalId, t.userId)],
+);
+export const cashCounts = sqliteTable("cash_counts", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().references(() => tenants.id),
+  sessionId: text("session_id").notNull().references(() => cashSessions.id),
+  userId: text("user_id").notNull().references(() => appUsers.id),
+  declaredAmountMinor: integer("declared_amount_minor").notNull(),
+  expectedAmountMinor: integer("expected_amount_minor").notNull(),
+  differenceMinor: integer("difference_minor").notNull(),
+  denominations: text("denominations").notNull().default("{}"),
+  notes: text("notes"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+export const cashEvents = sqliteTable("cash_events", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull().references(() => tenants.id),
+  sessionId: text("session_id").notNull().references(() => cashSessions.id),
+  userId: text("user_id").notNull().references(() => appUsers.id),
+  action: text("action").notNull(),
+  amountMinor: integer("amount_minor").notNull().default(0),
+  reason: text("reason").notNull(),
+  reference: text("reference"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 export const receivables = sqliteTable("receivables", {
   id: text("id").primaryKey(),

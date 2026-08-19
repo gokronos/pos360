@@ -34,10 +34,10 @@ export async function POST(req: Request) {
       .first<{ allowNegativeStock: number }>(),
     session = await d
       .prepare(
-        "SELECT id FROM cash_sessions WHERE tenant_id=? AND user_id=? AND status='open' ORDER BY opened_at DESC LIMIT 1",
+        "SELECT s.id,s.terminal_id terminalId,s.register_id registerId FROM cash_sessions s JOIN terminals t ON t.id=s.terminal_id AND t.status='active' JOIN terminal_user_access a ON a.terminal_id=t.id AND a.user_id=s.user_id AND a.active=1 WHERE s.tenant_id=? AND s.branch_id=? AND s.user_id=? AND s.status='open' ORDER BY s.opened_at DESC LIMIT 1",
       )
-      .bind(T, user)
-      .first<{ id: string }>();
+      .bind(T, B, user)
+      .first<{ id: string;terminalId:string;registerId:string }>();
   if (selectedPriceListId) {
     const list = await d
       .prepare(
@@ -53,7 +53,7 @@ export async function POST(req: Request) {
   }
   if (!session)
     return Response.json(
-      { error: "Debe abrir la caja antes de vender", needsCashOpen: true },
+      { error: "Seleccione una terminal autorizada y abra la caja antes de vender", needsCashOpen: true },
       { status: 409 },
     );
   const existing = await d
@@ -194,13 +194,16 @@ export async function POST(req: Request) {
   const stmts = [
       d
         .prepare(
-          "INSERT INTO sales (id,tenant_id,branch_id,warehouse_id,user_id,customer_id,local_id,total,subtotal_minor,discount_minor,total_minor) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+          "INSERT INTO sales (id,tenant_id,branch_id,warehouse_id,terminal_id,register_id,cash_session_id,user_id,customer_id,local_id,total,subtotal_minor,discount_minor,total_minor) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(
           saleId,
           T,
           B,
           warehouse.id,
+          session.terminalId,
+          session.registerId,
+          session.id,
           user,
           body.customerId || null,
           body.localId,
@@ -274,28 +277,8 @@ export async function POST(req: Request) {
           body.discountReason || "Descuento comercial",
         ),
     );
-  for (const p of payments) {
-    stmts.push(
-      d
-        .prepare(
-          "INSERT INTO cash_movements (id,tenant_id,session_id,user_id,movement_type,amount,reason,reference) VALUES (?,?,?,?,?,?,?,?)",
-        )
-        .bind(
-          randomUUID(),
-          T,
-          session.id,
-          user,
-          p.method === "cash"
-            ? "sale_cash"
-            : p.method === "credit"
-              ? "sale_credit"
-              : "sale_other",
-          p.method === "credit" ? 0 : p.amount,
-          `Venta ${p.method}`,
-          saleId,
-        ),
-    );
-  }
+  const cashMinor=payments.filter(p=>p.method==="cash").reduce((sum,p)=>sum+p.amountMinor,0);
+  if(cashMinor)stmts.push(d.prepare("INSERT INTO cash_movements (id,tenant_id,session_id,user_id,movement_type,amount,amount_minor,affects_cash,reason,reference) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(randomUUID(),T,session.id,user,"sale_cash",moneyToMajor(cashMinor),cashMinor,1,"Venta en efectivo",saleId));
   const creditMinor=payments.filter(p=>p.method==="credit").reduce((sum,p)=>sum+p.amountMinor,0);
   if(creditMinor&&body.customerId){const due=new Date(Date.now()+Math.max(0,customerProfile?.creditDays||0)*86400000).toISOString().slice(0,10);stmts.push(d.prepare("INSERT INTO receivables (id,tenant_id,branch_id,customer_id,sale_id,original_amount,balance,original_amount_minor,balance_minor,due_date,status) VALUES (?,?,?,?,?,?,?,?,?,?,'pending')").bind(randomUUID(),T,B,body.customerId,saleId,moneyToMajor(creditMinor),moneyToMajor(creditMinor),creditMinor,creditMinor,due),d.prepare("INSERT INTO customer_events (id,tenant_id,customer_id,user_id,action,amount_minor,reason,reference) VALUES (?,?,?,?,?,?,?,?)").bind(randomUUID(),T,body.customerId,user,"credit_sale",creditMinor,"Venta a crédito",saleId))}
   await d.batch(stmts);

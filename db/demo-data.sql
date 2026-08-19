@@ -103,6 +103,14 @@ INSERT OR IGNORE INTO user_branch_access (id,tenant_id,user_id,branch_id) VALUES
 ('uba_bodega','tenant_demo','user_bodega','branch_centro'),
 ('uba_contador','tenant_demo','user_contador','branch_centro');
 
+INSERT OR IGNORE INTO terminals (id,tenant_id,branch_id,register_id,name,code,status) VALUES
+('terminal_register_2','tenant_demo','branch_centro','register_2','Terminal Caja 2','TERM-CAJA-2','active');
+
+INSERT OR IGNORE INTO terminal_user_access (id,tenant_id,terminal_id,user_id,active,granted_by)
+SELECT 'tua_'||u.id,'tenant_demo','terminal_register_2',u.id,1,'user_preview'
+FROM app_users u JOIN user_branch_access a ON a.user_id=u.id AND a.branch_id='branch_centro'
+WHERE u.tenant_id='tenant_demo';
+
 -- La existencia demostrativa también usa la fuente única y deja kardex completo.
 INSERT OR IGNORE INTO inventory_balances (id,tenant_id,warehouse_id,product_id,quantity,average_cost_minor)
 SELECT 'balance_'||s.id,s.tenant_id,s.warehouse_id,s.product_id,s.quantity,p.cost_minor

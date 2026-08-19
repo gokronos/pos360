@@ -129,6 +129,7 @@ export async function POST(req: Request) {
     }>();
   const warehouseId = existing?.warehouseId || randomUUID(),
     registerId = existing?.registerId || randomUUID(),
+    terminalId = `terminal_${registerId}`,
     normalizedEmail = body.adminEmail!.trim().toLowerCase(),
     admin = await d
       .prepare("SELECT id FROM app_users WHERE tenant_id=? AND email=?")
@@ -217,6 +218,28 @@ export async function POST(req: Request) {
     );
   }
   stmts.push(
+    d
+      .prepare(
+        "INSERT OR IGNORE INTO user_branch_access (id,tenant_id,user_id,branch_id) VALUES (?,?,?,?)",
+      )
+      .bind(randomUUID(), T, adminId, branch.id),
+    d
+      .prepare(
+        "INSERT OR IGNORE INTO terminals (id,tenant_id,branch_id,register_id,name,code,status) VALUES (?,?,?,?,?,?,'active')",
+      )
+      .bind(
+        terminalId,
+        T,
+        branch.id,
+        registerId,
+        `Terminal ${body.registerName!.trim()}`,
+        `TERM-${registerId.slice(0, 12)}`,
+      ),
+    d
+      .prepare(
+        "INSERT OR IGNORE INTO terminal_user_access (id,tenant_id,terminal_id,user_id,active,granted_by) VALUES (?,?,?,?,1,?)",
+      )
+      .bind(randomUUID(), T, terminalId, adminId, access.user.id),
     d
       .prepare(
         "INSERT INTO business_settings (id,tenant_id,nit,sector,currency,timezone,allow_negative_stock,receipt_format,main_branch_id,main_warehouse_id,main_register_id,onboarding_completed,completed_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) ON CONFLICT(tenant_id) DO UPDATE SET nit=excluded.nit,sector=excluded.sector,currency=excluded.currency,timezone=excluded.timezone,allow_negative_stock=excluded.allow_negative_stock,receipt_format=excluded.receipt_format,main_branch_id=excluded.main_branch_id,main_warehouse_id=excluded.main_warehouse_id,main_register_id=excluded.main_register_id,onboarding_completed=1,completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP",
