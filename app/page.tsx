@@ -17,6 +17,7 @@ import ReportsReal, { DashboardReal } from "./reports-real";
 import SectorTools from "./sector-tools";
 import PlatformOwner from "./platform-owner";
 import ElectronicBilling from "./electronic-billing";
+import MobileAdmin from "./mobile-admin";
 type View =
   | "dashboard"
   | "pos"
@@ -26,6 +27,7 @@ type View =
   | "reportes"
   | "sector"
   | "facturacion"
+  | "android"
   | "configuracion"
   | "saas";
 const nav: { id: View; label: string; icon: string }[] = [
@@ -37,6 +39,7 @@ const nav: { id: View; label: string; icon: string }[] = [
   { id: "reportes", label: "Reportes", icon: "↗" },
   { id: "sector", label: "Mi sector", icon: "✦" },
   { id: "facturacion", label: "Facturación electrónica", icon: "▤" },
+  { id: "android", label: "Android y pilotos", icon: "A" },
   { id: "configuracion", label: "Configuración", icon: "⚙" },
   { id: "saas", label: "Panel POS360", icon: "◇" },
 ];
@@ -49,6 +52,7 @@ const moduleFor: Record<View, string> = {
   reportes: "reports",
   sector: "dashboard",
   facturacion: "settings",
+  android: "settings",
   configuracion: "settings",
   saas: "saas",
 };
@@ -241,6 +245,7 @@ export default function Home() {
           {view === "reportes" && can("reports") && <ReportsReal />}{" "}
           {view === "sector" && can("dashboard") && <SectorTools notify={notify} />}{" "}
           {view === "facturacion" && can("settings") && <ElectronicBilling notify={notify} />}{" "}
+          {view === "android" && can("settings") && <MobileAdmin notify={notify} />}{" "}
           {view === "configuracion" && can("settings") && (
             <Settings notify={notify} />
           )}{" "}

@@ -3,6 +3,7 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } fr
 import handler from "vinext/server/app-router-entry";
 import { setRuntimeEnv } from "../db/runtime-env";
 import {processElectronicBillingQueue} from "../db/electronic-billing-queue";
+import {refreshMobileAlerts} from "../db/mobile-monitor";
 
 interface Env {
   ASSETS: Fetcher;
@@ -47,7 +48,7 @@ const worker = {
   },
   async scheduled(_controller:ScheduledController,env:Env,ctx:ExecutionContext){
     setRuntimeEnv(env);
-    ctx.waitUntil(processElectronicBillingQueue(env.DB));
+    ctx.waitUntil(Promise.all([processElectronicBillingQueue(env.DB),refreshMobileAlerts(env.DB)]));
   },
 };
 
