@@ -2,6 +2,7 @@
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 import { setRuntimeEnv } from "../db/runtime-env";
+import {processElectronicBillingQueue} from "../db/electronic-billing-queue";
 
 interface Env {
   ASSETS: Fetcher;
@@ -43,6 +44,10 @@ const worker = {
     }
 
     return handler.fetch(request, env, ctx);
+  },
+  async scheduled(_controller:ScheduledController,env:Env,ctx:ExecutionContext){
+    setRuntimeEnv(env);
+    ctx.waitUntil(processElectronicBillingQueue(env.DB));
   },
 };
 

@@ -16,6 +16,7 @@ import BusinessSetupWizard from "./business-setup-wizard";
 import ReportsReal, { DashboardReal } from "./reports-real";
 import SectorTools from "./sector-tools";
 import PlatformOwner from "./platform-owner";
+import ElectronicBilling from "./electronic-billing";
 type View =
   | "dashboard"
   | "pos"
@@ -24,6 +25,7 @@ type View =
   | "clientes"
   | "reportes"
   | "sector"
+  | "facturacion"
   | "configuracion"
   | "saas";
 const nav: { id: View; label: string; icon: string }[] = [
@@ -34,6 +36,7 @@ const nav: { id: View; label: string; icon: string }[] = [
   { id: "clientes", label: "Clientes", icon: "◎" },
   { id: "reportes", label: "Reportes", icon: "↗" },
   { id: "sector", label: "Mi sector", icon: "✦" },
+  { id: "facturacion", label: "Facturación electrónica", icon: "▤" },
   { id: "configuracion", label: "Configuración", icon: "⚙" },
   { id: "saas", label: "Panel POS360", icon: "◇" },
 ];
@@ -45,6 +48,7 @@ const moduleFor: Record<View, string> = {
   clientes: "customers",
   reportes: "reports",
   sector: "dashboard",
+  facturacion: "settings",
   configuracion: "settings",
   saas: "saas",
 };
@@ -236,6 +240,7 @@ export default function Home() {
           )}{" "}
           {view === "reportes" && can("reports") && <ReportsReal />}{" "}
           {view === "sector" && can("dashboard") && <SectorTools notify={notify} />}{" "}
+          {view === "facturacion" && can("settings") && <ElectronicBilling notify={notify} />}{" "}
           {view === "configuracion" && can("settings") && (
             <Settings notify={notify} />
           )}{" "}

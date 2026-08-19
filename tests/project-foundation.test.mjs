@@ -15,9 +15,9 @@ test("local database setup includes every ordered migration and demo seed", asyn
   const files = (await readdir(new URL("../drizzle/", import.meta.url)))
     .filter((file) => file.endsWith(".sql"))
     .sort();
-  assert.equal(files.length, 22);
+  assert.equal(files.length, 23);
   assert.match(files[0], /^0000_/);
-  assert.match(files.at(-1), /^0021_/);
+  assert.match(files.at(-1), /^0022_/);
   const script = await readFile(
     new URL("../scripts/db-local.sh", import.meta.url),
     "utf8",
