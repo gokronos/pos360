@@ -183,6 +183,16 @@ export async function POST(req: Request) {
         taxRate,
         Number(body.taxIncluded !== false),
       ),
+    d
+      .prepare(
+        "INSERT OR IGNORE INTO measurement_units (id,tenant_id,name,symbol,precision) VALUES (?,?,?,'und',0)",
+      )
+      .bind(randomUUID(), T, "Unidad"),
+    d
+      .prepare(
+        "INSERT OR IGNORE INTO price_lists (id,tenant_id,name,currency,is_default) VALUES (?,?,?, ?,1)",
+      )
+      .bind(randomUUID(), T, "Precio general", body.currency),
   ];
   if (admin)
     stmts.push(

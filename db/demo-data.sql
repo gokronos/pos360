@@ -14,6 +14,14 @@ INSERT OR IGNORE INTO tax_rates (id,tenant_id,name,rate,included_in_price,active
 ('tax_demo_iva','tenant_demo','IVA',19,1,1),
 ('tax_ferreteria_iva','tenant_ferreteria','IVA',19,1,1);
 
+INSERT OR IGNORE INTO measurement_units (id,tenant_id,name,symbol,precision) VALUES
+('unit_demo','tenant_demo','Unidad','und',0),
+('unit_ferreteria','tenant_ferreteria','Unidad','und',0);
+
+INSERT OR IGNORE INTO price_lists (id,tenant_id,name,currency,is_default,active) VALUES
+('prices_demo','tenant_demo','Precio general','COP',1,1),
+('prices_ferreteria','tenant_ferreteria','Precio general','COP',1,1);
+
 INSERT OR IGNORE INTO app_users (id,tenant_id,email,display_name,role,active) VALUES
 ('user_preview','tenant_demo','preview@pos360.local','Administrador local POS360','owner',1),
 ('user_admin','tenant_demo','admin@pos360.local','Administrador POS360','owner',1),
@@ -32,6 +40,11 @@ INSERT OR IGNORE INTO products (id,tenant_id,sku,barcode,name,category,price,cos
 ('prod_aceta','tenant_demo','DRO-001','7709991002203','Acetaminofén 500 mg','Droguería',850,578,150,1,1),
 ('prod_tornillo','tenant_demo','FER-00125','FER-00125','Tornillo drywall 1 pulg.','Ferretería',180,122,1000,1,1),
 ('prod_taladro','tenant_demo','FER-TAL-01','7700000010101','Taladro percutor 1/2 pulg.','Ferretería',289900,215000,8,1,1);
+
+UPDATE products
+SET price_minor=CAST(ROUND(price*100) AS INTEGER),
+    cost_minor=CAST(ROUND(cost*100) AS INTEGER)
+WHERE price_minor=0 AND (price<>0 OR cost<>0);
 
 INSERT OR IGNORE INTO customers (id,tenant_id,document_type,document_number,name,phone,email,credit_limit,credit_days,active) VALUES
 ('customer_ana','tenant_demo','CC','1090123456','Ana Rodríguez','3001234567','ana@ejemplo.com',500000,30,1),

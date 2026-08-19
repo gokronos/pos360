@@ -6,7 +6,8 @@ const formatCurrency = (n: number, currency: string) =>
   new Intl.NumberFormat("es-CO", {
     style: "currency",
     currency,
-    maximumFractionDigits: 0,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
   }).format(n || 0);
 type P = {
   id: string;
@@ -16,6 +17,20 @@ type P = {
   category: string;
   price: number;
   stock: number;
+  productType?: string;
+  trackInventory?: number;
+  priceTiers?: { priceMinor: number; minQuantity: number }[];
+  productId?: string;
+  variantId?: string;
+  variants?: {
+    id: string;
+    name: string;
+    sku: string;
+    price: number;
+    stock: number;
+    barcodes: string[];
+    priceTiers: { priceMinor: number; minQuantity: number }[];
+  }[];
 };
 type Cart = { id: string; qty: number };
 type Draft = {
@@ -44,6 +59,10 @@ export default function POS({
   const [products, setProducts] = useState<P[]>([]),
     [cart, setCart] = useState<Cart[]>([]),
     [query, setQuery] = useState(""),
+    [priceLists, setPriceLists] = useState<
+      { id: string; name: string; currency: string; isDefault: number }[]
+    >([]),
+    [priceListId, setPriceListId] = useState(""),
     [cash, setCash] = useState<{
       id: string;
       openingAmount: number;
@@ -87,6 +106,25 @@ export default function POS({
       receiptFormat: "thermal_80",
     });
   const money = (value: number) => formatCurrency(value, business.currency);
+  const sellableProducts = (items: (P & { active?: number })[]) =>
+    items
+      .filter((item) => item.active)
+      .flatMap((item) => [
+        item,
+        ...(item.variants || []).map((variant) => ({
+          ...item,
+          id: `${item.id}:${variant.id}`,
+          productId: item.id,
+          variantId: variant.id,
+          name: `${item.name} · ${variant.name}`,
+          sku: variant.sku,
+          barcode: variant.barcodes[0] || null,
+          price: variant.price,
+          stock: variant.stock,
+          priceTiers: variant.priceTiers,
+          variants: [],
+        })),
+      ]);
   const load = async () => {
     const bootstrap = await apiJson<{
       tenant: { name: string };
@@ -102,13 +140,26 @@ export default function POS({
       currency: bootstrap.configuration.currency || "COP",
       receiptFormat: bootstrap.configuration.receiptFormat || "thermal_80",
     });
-    const [pd, cd, cud, ad] = await Promise.all([
-      apiJson<{ products: (P & { active?: number })[] }>("/api/products"),
+    const [initialProducts, cd, cud, ad] = await Promise.all([
+      apiJson<{
+        products: (P & { active?: number })[];
+        priceLists: typeof priceLists;
+      }>("/api/products"),
       apiJson<{ session: typeof cash }>("/api/cash"),
       apiJson<{ customers: typeof customers }>("/api/customers"),
       apiJson<{ drafts: Draft[]; sales: Sale[] }>("/api/pos-advanced"),
     ]);
-    setProducts((pd.products || []).filter((x) => x.active));
+    const defaultList = initialProducts.priceLists?.find((list) =>
+      Boolean(list.isDefault),
+    );
+    setPriceLists(initialProducts.priceLists || []);
+    setPriceListId(defaultList?.id || "");
+    if (defaultList) {
+      const priced = await apiJson<{
+        products: (P & { active?: number })[];
+      }>(`/api/products?priceListId=${defaultList.id}`);
+      setProducts(sellableProducts(priced.products || []));
+    } else setProducts(sellableProducts(initialProducts.products || []));
     setCash(cd.session || null);
     setCustomers(cud.customers || []);
     setDrafts(ad.drafts || []);
@@ -121,7 +172,20 @@ export default function POS({
       ),
     );
   }, []);
-  const filtered = products.filter((p) =>
+  const unitPrice = (product: P, quantity: number) => {
+      const tier = [...(product.priceTiers || [])]
+        .filter((candidate) => candidate.minQuantity <= quantity)
+        .sort((a, b) => b.minQuantity - a.minQuantity)[0];
+      return tier ? tier.priceMinor / 100 : product.price;
+    },
+    selectPriceList = async (id: string) => {
+      setPriceListId(id);
+      const priced = await apiJson<{
+        products: (P & { active?: number })[];
+      }>(`/api/products${id ? `?priceListId=${id}` : ""}`);
+      setProducts(sellableProducts(priced.products || []));
+    },
+    filtered = products.filter((p) =>
       `${p.name} ${p.sku} ${p.barcode || ""}`
         .toLowerCase()
         .includes(query.toLowerCase()),
@@ -130,14 +194,18 @@ export default function POS({
       () =>
         cart.reduce(
           (s, x) =>
-            s + (products.find((p) => p.id === x.id)?.price || 0) * x.qty,
+            s +
+            unitPrice(
+              products.find((p) => p.id === x.id)!,
+              x.qty,
+            ) *
+              x.qty,
           0,
         ),
       [cart, products],
     ),
-    discountAmount = Math.round(
-      (subtotal * Math.min(100, Number(discount || 0))) / 100,
-    ),
+    discountAmount =
+      Math.round(subtotal * Math.min(100, Number(discount || 0))) / 100,
     total = subtotal - discountAmount,
     paymentTotal = payments.reduce((s, p) => s + Number(p.amount || 0), 0);
   const add = (id: string) =>
@@ -183,8 +251,16 @@ export default function POS({
       payload = {
         localId: `pos-${crypto.randomUUID()}`,
         customerId: customerId || undefined,
-        items: cart.map((x) => ({ productId: x.id, quantity: x.qty })),
+        items: cart.map((x) => {
+          const product = products.find((candidate) => candidate.id === x.id)!;
+          return {
+            productId: product.productId || product.id,
+            variantId: product.variantId,
+            quantity: x.qty,
+          };
+        }),
         payments: normalized,
+        priceListId: priceListId || undefined,
         discountPercent: Number(discount),
         discountReason,
         total,
@@ -198,7 +274,10 @@ export default function POS({
       items: cart.map((x) => ({
         name: products.find((p) => p.id === x.id)?.name,
         qty: x.qty,
-        price: products.find((p) => p.id === x.id)?.price,
+        price: unitPrice(
+          products.find((p) => p.id === x.id)!,
+          x.qty,
+        ),
       })),
     });
     setCart([]);
@@ -208,12 +287,16 @@ export default function POS({
     if (!d.queued) load();
   };
   const saveDraft = async () => {
-    const items = cart.map((x) => ({
-        productId: x.id,
-        quantity: x.qty,
-        name: products.find((p) => p.id === x.id)?.name,
-        price: products.find((p) => p.id === x.id)?.price,
-      })),
+    const items = cart.map((x) => {
+        const product = products.find((candidate) => candidate.id === x.id)!;
+        return {
+          productId: product.productId || product.id,
+          variantId: product.variantId,
+          quantity: x.qty,
+          name: product.name,
+          price: unitPrice(product, x.qty),
+        };
+      }),
       r = await fetch("/api/pos-advanced", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -241,7 +324,12 @@ export default function POS({
       }),
       d = await readJson<any>(r);
     if (!r.ok) return notify(d.error);
-    setCart(d.items.map((x: any) => ({ id: x.productId, qty: x.quantity })));
+    setCart(
+      d.items.map((x: any) => ({
+        id: x.variantId ? `${x.productId}:${x.variantId}` : x.productId,
+        qty: x.quantity,
+      })),
+    );
     setCustomerId(d.customerId || "");
     setModal(null);
     notify("Documento recuperado");
@@ -282,6 +370,26 @@ export default function POS({
           </small>
         </div>
         <div className="pos-toolbar">
+          <select
+            className="inline-select"
+            value={priceListId}
+            onChange={(e) =>
+              void selectPriceList(e.target.value).catch((error) =>
+                notify(
+                  error instanceof Error
+                    ? error.message
+                    : "No fue posible cambiar la lista",
+                ),
+              )
+            }
+          >
+            <option value="">Precio base</option>
+            {priceLists.map((list) => (
+              <option value={list.id} key={list.id}>
+                {list.name}
+              </option>
+            ))}
+          </select>
           <button onClick={() => setModal("drafts")}>
             Pendientes <b>{drafts.length}</b>
           </button>
@@ -326,18 +434,22 @@ export default function POS({
             {filtered.map((p) => (
               <button
                 className="product-card"
-                disabled={p.stock <= 0}
+                disabled={p.trackInventory !== 0 && p.stock <= 0}
                 key={p.id}
                 onClick={() => add(p.id)}
               >
                 <div className="product-art">
                   {p.name[0]}
-                  <span>{p.stock} disp.</span>
+                  <span>
+                    {p.productType === "service"
+                      ? "Servicio"
+                      : `${p.stock} disp.`}
+                  </span>
                 </div>
                 <div>
                   <small>{p.category}</small>
                   <b>{p.name}</b>
-                  <strong>{money(p.price)}</strong>
+                  <strong>{money(unitPrice(p, 1))}</strong>
                 </div>
               </button>
             ))}
@@ -374,14 +486,14 @@ export default function POS({
                     <div className="product-badge">{p.name[0]}</div>
                     <div className="line-info">
                       <b>{p.name}</b>
-                      <small>{money(p.price)} c/u</small>
+                      <small>{money(unitPrice(p, x.qty))} c/u</small>
                       <div className="qty">
                         <button onClick={() => change(x.id, -1)}>−</button>
                         <span>{x.qty}</span>
                         <button onClick={() => change(x.id, 1)}>+</button>
                       </div>
                     </div>
-                    <strong>{money(p.price * x.qty)}</strong>
+                    <strong>{money(unitPrice(p, x.qty) * x.qty)}</strong>
                   </div>
                 );
               })

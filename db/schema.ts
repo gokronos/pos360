@@ -55,6 +55,18 @@ export const products = sqliteTable(
     category: text("category").notNull(),
     price: real("price").notNull(),
     cost: real("cost").notNull(),
+    productType: text("product_type").notNull().default("product"),
+    categoryId: text("category_id"),
+    subcategoryId: text("subcategory_id"),
+    brandId: text("brand_id"),
+    unitId: text("unit_id"),
+    taxId: text("tax_id"),
+    trackInventory: integer("track_inventory", { mode: "boolean" })
+      .notNull()
+      .default(true),
+    specialFields: text("special_fields").notNull().default("{}"),
+    priceMinor: integer("price_minor").notNull().default(0),
+    costMinor: integer("cost_minor").notNull().default(0),
     stock: real("stock").notNull().default(0),
     version: integer("version").notNull().default(1),
     active: integer("active", { mode: "boolean" }).notNull().default(true),
@@ -106,6 +118,9 @@ export const sales = sqliteTable(
     customerId: text("customer_id").references(() => customers.id),
     localId: text("local_id").notNull(),
     total: real("total").notNull(),
+    subtotalMinor: integer("subtotal_minor").notNull().default(0),
+    discountMinor: integer("discount_minor").notNull().default(0),
+    totalMinor: integer("total_minor").notNull().default(0),
     status: text("status").notNull().default("completed"),
     syncStatus: text("sync_status").notNull().default("synced"),
     createdAt: text("created_at")
@@ -122,9 +137,12 @@ export const saleLines = sqliteTable("sale_lines", {
   productId: text("product_id")
     .notNull()
     .references(() => products.id),
+  variantId: text("variant_id"),
   quantity: real("quantity").notNull(),
   unitPrice: real("unit_price").notNull(),
   lineTotal: real("line_total").notNull(),
+  unitPriceMinor: integer("unit_price_minor").notNull().default(0),
+  lineTotalMinor: integer("line_total_minor").notNull().default(0),
 });
 export const syncEvents = sqliteTable("sync_events", {
   id: text("id").primaryKey(),
@@ -222,6 +240,7 @@ export const salePayments = sqliteTable("sale_payments", {
     .references(() => sales.id),
   method: text("method").notNull(),
   amount: real("amount").notNull(),
+  amountMinor: integer("amount_minor").notNull().default(0),
   reference: text("reference"),
 });
 export const cashMovements = sqliteTable("cash_movements", {
@@ -770,6 +789,8 @@ export const productPresentations = sqliteTable("product_presentations", {
   conversionFactor: real("conversion_factor").notNull().default(1),
   barcode: text("barcode"),
   salePrice: real("sale_price").notNull(),
+  unitId: text("unit_id"),
+  salePriceMinor: integer("sale_price_minor").notNull().default(0),
   active: integer("active", { mode: "boolean" }).notNull().default(true),
 });
 export const businessSettings = sqliteTable(
@@ -819,3 +840,172 @@ export const taxRates = sqliteTable(
   },
   (t) => [uniqueIndex("tax_rates_tenant_name_uq").on(t.tenantId, t.name)],
 );
+export const catalogCategories = sqliteTable(
+  "catalog_categories",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    parentId: text("parent_id"),
+    name: text("name").notNull(),
+    description: text("description"),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    uniqueIndex("catalog_category_tenant_parent_name_uq").on(
+      t.tenantId,
+      t.parentId,
+      t.name,
+    ),
+  ],
+);
+export const brands = sqliteTable(
+  "brands",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    name: text("name").notNull(),
+    description: text("description"),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [uniqueIndex("brands_tenant_name_uq").on(t.tenantId, t.name)],
+);
+export const measurementUnits = sqliteTable(
+  "measurement_units",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    name: text("name").notNull(),
+    symbol: text("symbol").notNull(),
+    precision: integer("precision").notNull().default(0),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    uniqueIndex("measurement_units_tenant_symbol_uq").on(t.tenantId, t.symbol),
+  ],
+);
+export const productBarcodes = sqliteTable(
+  "product_barcodes",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    productId: text("product_id")
+      .notNull()
+      .references(() => products.id),
+    variantId: text("variant_id"),
+    code: text("code").notNull(),
+    kind: text("kind").notNull().default("EAN13"),
+    isPrimary: integer("is_primary", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    uniqueIndex("product_barcodes_tenant_code_uq").on(t.tenantId, t.code),
+  ],
+);
+export const productVariants = sqliteTable(
+  "product_variants",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    productId: text("product_id")
+      .notNull()
+      .references(() => products.id),
+    name: text("name").notNull(),
+    sku: text("sku").notNull(),
+    attributes: text("attributes").notNull().default("{}"),
+    priceMinor: integer("price_minor").notNull().default(0),
+    costMinor: integer("cost_minor").notNull().default(0),
+    stock: real("stock").notNull().default(0),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [uniqueIndex("product_variants_tenant_sku_uq").on(t.tenantId, t.sku)],
+);
+export const priceLists = sqliteTable(
+  "price_lists",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    name: text("name").notNull(),
+    currency: text("currency").notNull(),
+    isDefault: integer("is_default", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [uniqueIndex("price_lists_tenant_name_uq").on(t.tenantId, t.name)],
+);
+export const productPrices = sqliteTable(
+  "product_prices",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    priceListId: text("price_list_id")
+      .notNull()
+      .references(() => priceLists.id),
+    productId: text("product_id")
+      .notNull()
+      .references(() => products.id),
+    variantId: text("variant_id").references(() => productVariants.id),
+    priceMinor: integer("price_minor").notNull(),
+    minQuantity: real("min_quantity").notNull().default(1),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    uniqueIndex("product_prices_scope_uq").on(
+      t.priceListId,
+      t.productId,
+      t.variantId,
+      t.minQuantity,
+    ),
+  ],
+);
+export const catalogImages = sqliteTable("catalog_images", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id")
+    .notNull()
+    .references(() => tenants.id),
+  productId: text("product_id")
+    .notNull()
+    .references(() => products.id),
+  variantId: text("variant_id").references(() => productVariants.id),
+  url: text("url").notNull(),
+  altText: text("alt_text"),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});

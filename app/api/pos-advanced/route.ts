@@ -101,16 +101,18 @@ export async function POST(req: Request) {
     );
   const lines = await d
     .prepare(
-      "SELECT l.id,l.product_id productId,l.quantity,l.unit_price unitPrice,l.line_total lineTotal,p.stock FROM sale_lines l JOIN products p ON p.id=l.product_id WHERE l.sale_id=?",
+      "SELECT l.id,l.product_id productId,l.variant_id variantId,l.quantity,l.unit_price unitPrice,l.line_total lineTotal,COALESCE(v.stock,p.stock) stock,p.track_inventory trackInventory FROM sale_lines l JOIN products p ON p.id=l.product_id LEFT JOIN product_variants v ON v.id=l.variant_id WHERE l.sale_id=?",
     )
     .bind(sale.id)
     .all<{
       id: string;
       productId: string;
+      variantId: string | null;
       quantity: number;
       unitPrice: number;
       lineTotal: number;
       stock: number;
+      trackInventory: number;
     }>();
   const status = p.action === "void" ? "voided" : "returned",
     returnId = randomUUID(),
@@ -132,7 +134,7 @@ export async function POST(req: Request) {
         ),
     ];
   for (const l of lines.results || []) {
-    const balance = l.stock + l.quantity;
+    const balance = l.trackInventory ? l.stock + l.quantity : l.stock;
     stmts.push(
       d
         .prepare(
@@ -147,28 +149,38 @@ export async function POST(req: Request) {
           l.unitPrice,
           l.lineTotal,
         ),
-      d
-        .prepare(
-          "UPDATE products SET stock=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-        )
-        .bind(balance, l.productId),
-      d
-        .prepare(
-          "INSERT INTO inventory_movements (id,tenant_id,branch_id,product_id,user_id,movement_type,quantity,balance_after,reason,reference) VALUES (?,?,?,?,?,?,?,?,?,?)",
-        )
-        .bind(
-          randomUUID(),
-          T,
-          B,
-          l.productId,
-          user,
-          p.action === "void" ? "sale_void" : "sale_return",
-          l.quantity,
-          balance,
-          p.reason || "Reversión de venta",
-          number,
-        ),
     );
+    if (l.trackInventory) {
+      stmts.push(
+        l.variantId
+          ? d
+              .prepare(
+                "UPDATE product_variants SET stock=? WHERE id=? AND tenant_id=?",
+              )
+              .bind(balance, l.variantId, T)
+          : d
+              .prepare(
+                "UPDATE products SET stock=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+              )
+              .bind(balance, l.productId),
+        d
+          .prepare(
+            "INSERT INTO inventory_movements (id,tenant_id,branch_id,product_id,user_id,movement_type,quantity,balance_after,reason,reference) VALUES (?,?,?,?,?,?,?,?,?,?)",
+          )
+          .bind(
+            randomUUID(),
+            T,
+            B,
+            l.productId,
+            user,
+            p.action === "void" ? "sale_void" : "sale_return",
+            l.quantity,
+            balance,
+            p.reason || "Reversión de venta",
+            number,
+          ),
+      );
+    }
   }
   await d.batch(stmts);
   return Response.json({ number, status, total: sale.total });

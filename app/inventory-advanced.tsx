@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { readJson } from "./api-client";
+import CatalogManager from "./catalog-manager";
 const money = (n: number) =>
   new Intl.NumberFormat("es-CO", {
     style: "currency",
@@ -32,7 +33,7 @@ export default function Inventory({
   notify: (s: string) => void;
   [key: string]: unknown;
 }) {
-  const [tab, setTab] = useState("stock"),
+  const [tab, setTab] = useState("catalog"),
     [data, setData] = useState<any>({
       warehouses: [],
       stocks: [],
@@ -153,6 +154,7 @@ export default function Inventory({
       </div>
       <div className="admin-tabs inventory-tabs">
         {[
+          ["catalog", "Catálogo profesional"],
           ["stock", "Existencias"],
           ["transfers", "Traslados"],
           ["counts", "Conteos"],
@@ -169,6 +171,7 @@ export default function Inventory({
           </button>
         ))}
       </div>
+      {tab === "catalog" && <CatalogManager notify={notify} />}
       {tab === "stock" && (
         <>
           <div className="warehouse-grid">
