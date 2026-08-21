@@ -7,6 +7,8 @@ const read=path=>readFile(new URL(path,import.meta.url),"utf8");
 test("demo identity only exists on local hosts",async()=>{
   const identity=await read("../db/request-identity.ts");
   assert.match(identity,/host==="localhost"/);
+  assert.match(identity,/cf-connecting-ip/);
+  assert.match(identity,/x-forwarded-host/);
   assert.match(identity,/host\.endsWith\("\.local"\)/);
   assert.match(identity,/if\(!local\)return null/);
 });
