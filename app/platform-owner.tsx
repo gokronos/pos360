@@ -10,7 +10,7 @@ export default function PlatformOwner(){
   const load=async()=>setData(await apiJson<PlatformData>(`/api/platform${selected?`?tenantId=${selected}`:""}`));
   useEffect(()=>{void load().catch(e=>setMessage(e instanceof Error?e.message:"No fue posible cargar la plataforma"))},[selected]);
   const request=async(method:string,payload:any,success:string)=>{setBusy(true);try{await apiJson("/api/platform",{method,headers:{"content-type":"application/json"},body:JSON.stringify(payload)});setMessage(success);setModal(null);await load()}catch(e){setMessage(e instanceof Error?e.message:"No fue posible completar la acción")}finally{setBusy(false)}};
-  if(!data)return <main className="setup-loading">Validando acceso de plataforma…</main>;
+  if(!data)return <main className="setup-loading">{message||"Validando acceso de plataforma…"}</main>;
   const company=data.companies.find(x=>x.id===selected),tabs=[['companies','Empresas'],['plans','Planes y suscripciones'],['terminals','Terminales'],['monitoring','Monitoreo'],['support','Soporte'],['access','Acceso excepcional'],['audit','Auditoría']];
   return <>
     <div className="platform-banner"><div><span>POS360 · CONTROL DE PLATAFORMA</span><h2>Panel del propietario</h2><p>Entorno independiente de los paneles de cada negocio.</p></div><div><b>{data.admin.displayName}</b><small>{data.admin.role}</small></div></div>

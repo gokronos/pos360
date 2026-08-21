@@ -1,8 +1,8 @@
 import {randomUUID} from "node:crypto";
 import {getRuntimeEnv} from "../../../db/runtime-env";
+import {requestIdentityEmail} from "../../../db/request-identity";
 
-const emailOf=(req:Request)=>req.headers.get("oai-authenticated-user-email")||"preview@pos360.local";
-async function authorize(req:Request,write=false){const admin=await getRuntimeEnv().DB.prepare("SELECT id,email,display_name displayName,role FROM platform_admins WHERE email=? AND active=1").bind(emailOf(req)).first<{id:string;email:string;displayName:string;role:string}>();if(!admin)return {error:Response.json({error:"Acceso exclusivo para el equipo propietario de POS360"},{status:403})};if(write&&admin.role==="platform_auditor")return {error:Response.json({error:"El auditor de plataforma tiene acceso de solo lectura"},{status:403})};return {admin}}
+async function authorize(req:Request,write=false){const email=requestIdentityEmail(req);if(!email)return {error:Response.json({error:"Autenticación requerida"},{status:401})};const admin=await getRuntimeEnv().DB.prepare("SELECT id,email,display_name displayName,role FROM platform_admins WHERE email=? AND active=1").bind(email).first<{id:string;email:string;displayName:string;role:string}>();if(!admin)return {error:Response.json({error:"Acceso exclusivo para el equipo propietario de POS360"},{status:403})};if(write&&admin.role==="platform_auditor")return {error:Response.json({error:"El auditor de plataforma tiene acceso de solo lectura"},{status:403})};return {admin}}
 const audit=(req:Request,adminId:string,tenantId:string|null,action:string,entityType:string,entityId:string,reason:string,metadata:unknown={})=>getRuntimeEnv().DB.prepare("INSERT INTO platform_audit_logs(id,platform_admin_id,tenant_id,action,entity_type,entity_id,reason,metadata,ip_address) VALUES(?,?,?,?,?,?,?,?,?)").bind(randomUUID(),adminId,tenantId,action,entityType,entityId,reason,JSON.stringify(metadata),req.headers.get("x-forwarded-for")||null);
 
 export async function GET(req:Request){

@@ -22,6 +22,7 @@
 
 /* Responsive application shell and touch layout */
 .mobile-menu-button,.mobile-nav-backdrop,.mobile-nav-close{display:none}
+.access-locked{width:min(430px,calc(100% - 32px));background:white;border:1px solid var(--line);border-radius:18px;padding:34px;text-align:center;box-shadow:var(--shadow)}.access-locked .brand-mark{margin:auto}.access-locked h1{margin:18px 0 8px}.access-locked p{font-size:14px;color:var(--ink)}.access-locked small{color:var(--muted);font-weight:500}
 @media(max-width:760px){
   body{font-size:15px;overflow-x:hidden}
   .app-shell{display:block;min-width:0}

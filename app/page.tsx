@@ -125,7 +125,7 @@ const money = (n: number) =>
     maximumFractionDigits: 0,
   }).format(n);
 export default function Home() {
-  const { session, can, loading } = useAccess();
+  const { session, can, loading, error } = useAccess();
   const [view, setView] = useState<View>("dashboard"),
     [collapsed, setCollapsed] = useState(false),
     [mobileMenuOpen, setMobileMenuOpen] = useState(false),
@@ -157,6 +157,7 @@ export default function Home() {
     title = nav.find((n) => n.id === view)?.label;
   if (loading)
     return <main className="setup-loading">Preparando su empresa…</main>;
+  if(error)return <main className="setup-loading"><div className="access-locked"><div className="brand-mark">P</div><h1>Acceso protegido</h1><p>{error}</p><small>El inicio de sesión seguro estará disponible en la siguiente etapa.</small></div></main>;
   if (session && !session.configuration.completed)
     return <BusinessSetupWizard session={session} />;
   return (

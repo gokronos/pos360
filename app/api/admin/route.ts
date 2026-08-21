@@ -2,23 +2,15 @@ import { randomUUID } from "node:crypto";
 import { getRuntimeEnv } from "../../../db/runtime-env";
 import { roleModules, roles } from "../../../db/authz";
 import {checkSubscriptionLimit} from "../../../db/subscription";
+import {requestIdentityEmail,requestIdentityName} from "../../../db/request-identity";
 
-const emailOf = (r: Request) =>
-  r.headers.get("oai-authenticated-user-email") || "preview@pos360.local";
-const nameOf = (r: Request) => {
-  const raw = r.headers.get("oai-authenticated-user-full-name");
-  try {
-    return raw ? decodeURIComponent(raw) : "Administrador POS360";
-  } catch {
-    return "Administrador POS360";
-  }
-};
 async function actor(req: Request, tenantId: string) {
+  const email=requestIdentityEmail(req);if(!email)return null;
   return getRuntimeEnv()
     .DB.prepare(
       "SELECT id,role,active FROM app_users WHERE tenant_id=? AND email=?",
     )
-    .bind(tenantId, emailOf(req))
+    .bind(tenantId, email)
     .first<{ id: string; role: string; active: number }>();
 }
 async function authorized(req: Request, tenantId: string) {
@@ -49,8 +41,9 @@ async function audit(
 }
 
 export async function GET(req: Request) {
+  const identityEmail=requestIdentityEmail(req);if(!identityEmail)return Response.json({error:"Autenticación requerida"},{status:401});
   const d = getRuntimeEnv().DB,
-    email = emailOf(req),
+    email = identityEmail,
     url = new URL(req.url),
     requested = url.searchParams.get("tenantId");
   const companies = await d
@@ -114,6 +107,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const identityEmail=requestIdentityEmail(req);if(!identityEmail)return Response.json({error:"Autenticación requerida"},{status:401});
   const d = getRuntimeEnv().DB,
     p = (await req.json()) as {
       action?: "company" | "branch" | "user";
@@ -134,8 +128,8 @@ export async function POST(req: Request) {
     const tenantId = randomUUID(),
       branchId = randomUUID(),
       userId = randomUUID(),
-      email = emailOf(req),
-      name = nameOf(req);
+      email = identityEmail,
+      name = requestIdentityName(req);
     const stmts = [
       d
         .prepare(

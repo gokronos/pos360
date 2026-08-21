@@ -16,7 +16,7 @@ export type Session = {
   };
 };
 export function useAccess() {
-  const [session, setSession] = useState<Session | null>(null);
+  const [session, setSession] = useState<Session | null>(null),[error,setError]=useState("");
   useEffect(() => {
     let active = true;
     void fetch("/api/bootstrap")
@@ -36,14 +36,15 @@ export function useAccess() {
             configuration: d.configuration,
           });
       })
-      .catch((error) => console.error("No fue posible iniciar POS360", error));
+      .catch((error) => {console.error("No fue posible iniciar POS360", error);if(active)setError("POS360 está protegido. Inicie sesión para continuar.")});
     return () => {
       active = false;
     };
   }, []);
   return {
     session,
-    loading: session === null,
+    loading: session === null&&!error,
+    error,
     can: (module: string) => !session || session.modules.includes(module),
   };
 }

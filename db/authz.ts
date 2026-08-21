@@ -1,4 +1,5 @@
 import { getRuntimeEnv } from "./runtime-env";
+import {requestIdentityEmail} from "./request-identity";
 
 export const roles = [
   "owner",
@@ -55,8 +56,6 @@ export type AccessUser = {
   branchId: string;
   modules: string[];
 };
-const emailOf = (req: Request) =>
-  req.headers.get("oai-authenticated-user-email") || "preview@pos360.local";
 const cookiesOf = (req: Request) =>
   Object.fromEntries(
     (req.headers.get("cookie") || "")
@@ -72,7 +71,8 @@ export async function getAccess(
 ) {
   const d = getRuntimeEnv().DB,
     cookies = cookiesOf(req),
-    email = emailOf(req);
+    email = requestIdentityEmail(req);
+  if(!email)return null;
   const wantedTenant =
     explicitTenant ||
     req.headers.get("x-pos360-tenant-id") ||
@@ -110,8 +110,8 @@ export async function requireAccess(
   if (!user)
     return {
       error: Response.json(
-        { error: "Usuario sin acceso a la empresa o sede solicitada" },
-        { status: 403 },
+        { error: "Autenticación requerida o usuario sin acceso" },
+        { status: 401 },
       ),
     };
   if (!user.modules.includes(moduleName))
