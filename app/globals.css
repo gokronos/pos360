@@ -21,20 +21,24 @@
 .catalog-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}.catalog-head h2{margin:0 0 5px;font-size:20px}.catalog-head p{margin:0;color:var(--muted);font-size:10px}.catalog-head>div:last-child{display:flex;gap:8px}.catalog-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:15px}.catalog-kpis article{background:white;border:1px solid var(--line);border-radius:11px;padding:13px;display:flex;flex-direction:column;gap:4px}.catalog-kpis span{font-size:9px;color:var(--muted);text-transform:uppercase}.catalog-kpis b{font-size:19px;color:var(--navy)}.catalog-product{display:flex;align-items:center;gap:9px}.catalog-product img,.catalog-product>span{width:38px;height:38px;border-radius:8px;object-fit:cover;background:#e6f4f2;color:var(--teal);display:grid;place-items:center;font-weight:900}.catalog-product div{display:flex;flex-direction:column}.catalog-product small{color:var(--muted);font-size:8px}.catalog-modal{width:min(920px,96vw)}.catalog-form{padding:22px 24px;display:flex;flex-direction:column;gap:14px}.catalog-block{border:1px solid var(--line);border-radius:11px;padding:14px;display:flex;flex-direction:column;gap:7px}.catalog-block h4{margin:0}.catalog-block small{color:var(--muted);font-size:9px}.catalog-block textarea{min-height:65px;border:1px solid #d7e1e5;border-radius:8px;padding:10px;font:inherit;resize:vertical}.price-assign{margin-top:15px}.price-assign h3{margin-top:0}.price-assign>.primary{margin-top:14px}.check-line{display:flex!important;flex-direction:row!important;align-items:center;gap:8px!important}@media(max-width:800px){.catalog-kpis{grid-template-columns:1fr 1fr}.catalog-head{align-items:flex-start;gap:12px}.catalog-head>div:last-child{flex-direction:column}.catalog-modal{width:100%}}
 
 /* Responsive application shell and touch layout */
-.mobile-menu-button,.mobile-nav-backdrop{display:none}
+.mobile-menu-button,.mobile-nav-backdrop,.mobile-nav-close{display:none}
 @media(max-width:760px){
   body{font-size:15px;overflow-x:hidden}
   .app-shell{display:block;min-width:0}
   .mobile-nav-backdrop{display:block;position:fixed;inset:0;border:0;background:#061923aa;z-index:19;backdrop-filter:blur(2px)}
-  .sidebar,.sidebar.collapsed{width:min(86vw,310px);transform:translateX(-105%);box-shadow:18px 0 50px #06192355;z-index:20;padding:18px 14px;overflow-y:auto}
+  .sidebar,.sidebar.collapsed{width:min(88vw,310px);height:100dvh;transform:translateX(-105%);box-shadow:18px 0 50px #06192355;z-index:20;padding:14px;overflow:hidden;display:flex}
   .sidebar.mobile-open,.sidebar.collapsed.mobile-open{transform:translateX(0)}
   .sidebar .brand-copy,.sidebar.collapsed .brand-copy,.sidebar .nav-item>span:last-child,.sidebar.collapsed .nav-item>span:last-child,.sidebar .sidebar-status div,.sidebar.collapsed .sidebar-status div,.sidebar .user-card div:nth-child(2),.sidebar.collapsed .user-card div:nth-child(2){display:flex}
   .sidebar .collapse{display:none}
-  .sidebar nav{gap:6px}
-  .sidebar .nav-item{height:48px;font-size:14px;border-radius:12px;overflow:visible}
+  .sidebar .brand{min-height:54px;padding:0 4px 12px;flex:0 0 auto}
+  .sidebar .brand-mark{min-width:38px;height:38px}
+  .mobile-nav-close{display:grid;margin-left:auto;flex:0 0 42px;width:42px;height:42px;place-items:center;border:1px solid #ffffff24;border-radius:11px;background:#ffffff12;color:white;font-size:25px;line-height:1}
+  .sidebar nav{gap:5px;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:2px 2px 10px;scrollbar-width:thin;scrollbar-color:#ffffff30 transparent}
+  .sidebar .nav-item{height:46px;min-height:46px;font-size:14px;border-radius:12px;overflow:visible;flex:0 0 auto}
   .sidebar .nav-icon{font-size:20px}
-  .sidebar-status{min-height:54px}
-  .user-card{min-height:56px}
+  .sidebar-status{min-height:48px;margin-top:0;padding:9px 10px;flex:0 0 auto;background:#0d2739}
+  .user-card{min-height:54px;padding:8px 10px;flex:0 0 auto}
+  .user-card b{display:block;max-width:170px;overflow:hidden;text-overflow:ellipsis}
   .workspace,.sidebar.collapsed~.workspace{width:100%;margin-left:0;min-width:0}
   .topbar{height:70px;padding:0 12px;gap:10px}
   .mobile-menu-button{display:flex;flex:0 0 44px;width:44px;height:44px;border:1px solid var(--line);border-radius:11px;background:white;align-items:center;justify-content:center;flex-direction:column;gap:5px}

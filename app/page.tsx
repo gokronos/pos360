@@ -177,6 +177,13 @@ export default function Home() {
             <strong>POS360</strong>
             <span>Gestión comercial</span>
           </div>
+          <button
+            className="mobile-nav-close"
+            aria-label="Cerrar menú principal"
+            onClick={() => setMobileMenuOpen(false)}
+          >
+            ×
+          </button>
         </div>
         <button className="collapse" onClick={() => setCollapsed(!collapsed)}>
           ‹
