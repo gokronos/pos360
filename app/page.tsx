@@ -128,6 +128,7 @@ export default function Home() {
   const { session, can, loading } = useAccess();
   const [view, setView] = useState<View>("dashboard"),
     [collapsed, setCollapsed] = useState(false),
+    [mobileMenuOpen, setMobileMenuOpen] = useState(false),
     [cart, setCart] = useState<{ id: number; qty: number }[]>([
       { id: 2, qty: 2 },
       { id: 4, qty: 1 },
@@ -160,7 +161,16 @@ export default function Home() {
     return <BusinessSetupWizard session={session} />;
   return (
     <main className="app-shell">
-      <aside className={collapsed ? "sidebar collapsed" : "sidebar"}>
+      {mobileMenuOpen && (
+        <button
+          className="mobile-nav-backdrop"
+          aria-label="Cerrar menú"
+          onClick={() => setMobileMenuOpen(false)}
+        />
+      )}
+      <aside
+        className={`${collapsed ? "sidebar collapsed" : "sidebar"}${mobileMenuOpen ? " mobile-open" : ""}`}
+      >
         <div className="brand">
           <div className="brand-mark">P</div>
           <div className="brand-copy">
@@ -178,7 +188,10 @@ export default function Home() {
               <button
                 key={x.id}
                 className={view === x.id ? "nav-item active" : "nav-item"}
-                onClick={() => setView(x.id)}
+                onClick={() => {
+                  setView(x.id);
+                  setMobileMenuOpen(false);
+                }}
               >
                 <span className="nav-icon">{x.icon}</span>
                 <span>{x.label}</span>
@@ -199,6 +212,16 @@ export default function Home() {
       </aside>
       <section className="workspace">
         <header className="topbar">
+          <button
+            className="mobile-menu-button"
+            aria-label="Abrir menú principal"
+            aria-expanded={mobileMenuOpen}
+            onClick={() => setMobileMenuOpen(true)}
+          >
+            <span />
+            <span />
+            <span />
+          </button>
           <div>
             <small>
               {`${session?.tenant.name || "POS360"} · ${session?.branch.name || "Sede"}`}
