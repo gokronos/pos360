@@ -14,11 +14,12 @@ test("demo identity only exists on local hosts",async()=>{
 });
 
 test("production authorization has no public preview fallback",async()=>{
-  const [auth,admin,platform]=await Promise.all([read("../db/authz.ts"),read("../app/api/admin/route.ts"),read("../app/api/platform/route.ts")]);
+  const [auth,admin,platform,bootstrap]=await Promise.all([read("../db/authz.ts"),read("../app/api/admin/route.ts"),read("../app/api/platform/route.ts"),read("../app/api/bootstrap/route.ts")]);
   assert.doesNotMatch(auth,/\|\| "preview@pos360\.local"/);
   assert.doesNotMatch(admin,/\|\| "preview@pos360\.local"/);
   assert.doesNotMatch(platform,/\|\|"preview@pos360\.local"/);
   assert.match(platform,/Autenticación requerida/);
+  assert.match(bootstrap,/Autenticación requerida.*status: 401/s);
 });
 
 test("desktop and mobile internal operations cannot reopen public header auth",async()=>{

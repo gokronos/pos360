@@ -9,7 +9,7 @@ export async function GET(req: Request) {
   const d = env.DB,
     user = await getAccess(req);
   if (!user)
-    return Response.json({ error: "Usuario sin acceso" }, { status: 403 });
+    return Response.json({ error: "Autenticación requerida" }, { status: 401 });
   const data = await d
       .prepare(
         "SELECT id,sku,barcode,name,category,price,cost,stock,version FROM products WHERE tenant_id=? AND active=1 ORDER BY name",
