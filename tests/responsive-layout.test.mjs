@@ -15,6 +15,7 @@ test("mobile navigation is accessible and closes after selecting a module", asyn
 
 test("the business shell uses the full mobile viewport", async () => {
   const css = await read("../app/globals.css");
+  assert.match(css, /\.sidebar nav\{display:flex;flex-direction:column;gap:5px;flex:1;min-height:0;overflow-y:auto/);
   assert.match(css, /@media\(max-width:760px\)/);
   assert.match(css, /\.sidebar\.mobile-open/);
   assert.match(css, /\.sidebar nav\{gap:5px;flex:1;min-height:0;overflow-y:auto/);
