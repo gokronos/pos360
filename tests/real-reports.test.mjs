@@ -25,7 +25,7 @@ test("dashboard and reports render live filters and every required section",asyn
   assert.match(ui,/fetch\(`\/api\/reports\?\$\{q\}`\)/);
   for(const label of ["Ventas de hoy","Utilidad","Ticket promedio","Medios de pago","Inventario valorizado","Productos agotados","Compras recibidas","Movimientos de caja","Cartera","Devoluciones","Auditoría","Bodega","Usuario"])
     assert.match(ui,new RegExp(label,"i"));
-  const page=await readFile("app/page.tsx","utf8");
+  const page=await readFile("app/business-app.tsx","utf8");
   assert.match(page,/DashboardReal/);
   assert.match(page,/ReportsReal/);
 });

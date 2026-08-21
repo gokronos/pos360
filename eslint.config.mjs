@@ -25,14 +25,14 @@ const eslintConfig = defineConfig([
     files: [
       "app/admin-settings.tsx",
       "app/inventory-advanced.tsx",
-      "app/page.tsx",
+      "app/business-app.tsx",
       "app/pos-advanced.tsx",
       "app/purchases-advanced.tsx",
     ],
     rules: { "@typescript-eslint/no-explicit-any": "off" },
   },
   {
-    files: ["app/page.tsx"],
+    files: ["app/business-app.tsx"],
     rules: { "@typescript-eslint/no-unused-vars": "off" },
   },
 ]);

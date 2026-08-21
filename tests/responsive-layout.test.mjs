@@ -5,7 +5,7 @@ import test from "node:test";
 const read = (path) => readFile(new URL(path, import.meta.url), "utf8");
 
 test("mobile navigation is accessible and closes after selecting a module", async () => {
-  const page = await read("../app/page.tsx");
+  const page = await read("../app/business-app.tsx");
   assert.match(page, /mobileMenuOpen/);
   assert.match(page, /aria-label="Abrir menú principal"/);
   assert.match(page, /aria-label="Cerrar menú principal"/);

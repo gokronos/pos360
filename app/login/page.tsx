@@ -1,0 +1,2 @@
+import Link from "next/link";
+export default function LoginPending(){return <main className="public-gate"><div className="marketing-brand"><span>P</span><div><b>POS360</b><small>Acceso empresarial</small></div></div><h1>Inicio de sesión seguro</h1><p>Estamos preparando el acceso con contraseña, recuperación y sesiones protegidas.</p><div className="public-gate-note">El sistema interno ya está cerrado al acceso público. No ingrese información real hasta activar esta etapa.</div><Link className="marketing-primary" href="/">Volver al sitio</Link></main>}
